@@ -498,6 +498,95 @@ class ExecutionSyncState(TimestampMixin, Base):
     last_status: Mapped[str] = mapped_column(String(30), default="idle", nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
 
+class StopState(TimestampMixin, Base):
+    __tablename__ = "stop_states"
+    __table_args__ = (
+        UniqueConstraint("execution_order_id", name="uq_stop_states_execution_order_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_order_id: Mapped[int] = mapped_column(ForeignKey("execution_orders.id", ondelete="CASCADE"), index=True)
+    execution_fill_id: Mapped[int | None] = mapped_column(ForeignKey("execution_fills.id", ondelete="SET NULL"), index=True, nullable=True)
+    risk_snapshot_id: Mapped[int | None] = mapped_column(ForeignKey("risk_snapshots.id", ondelete="SET NULL"), index=True, nullable=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    strategy_name: Mapped[str] = mapped_column(String(100), index=True)
+    direction: Mapped[str] = mapped_column(String(20), nullable=False, default="long")
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    stop_style: Mapped[str] = mapped_column(String(20), nullable=False, default="fixed")
+    status: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    initial_stop_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    current_stop_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    current_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    highest_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    trailing_activation_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    trailing_offset_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    trailing_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    trailing_activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    step_trigger_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    step_increment_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    step_level: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_step_trigger_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    protected_quantity: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    broker_stop_order_id: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
+    last_fill_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    update_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class StopUpdateHistory(TimestampMixin, Base):
+    __tablename__ = "stop_update_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    stop_state_id: Mapped[int] = mapped_column(ForeignKey("stop_states.id", ondelete="CASCADE"), index=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    event_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
+    previous_stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    new_stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    reference_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    high_watermark: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    step_level: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    broker_stop_order_id: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
+    message: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class StopSyncState(TimestampMixin, Base):
+    __tablename__ = "stop_sync_states"
+    __table_args__ = (
+        UniqueConstraint("asset_class", "timeframe", name="uq_stop_sync_states_asset_timeframe"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_fill_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    filled_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    activated_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    unchanged_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_status: Mapped[str] = mapped_column(String(30), default="idle", nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+
+
 class Candle(TimestampMixin, Base):
     __tablename__ = "candles"
     __table_args__ = (

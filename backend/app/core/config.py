@@ -83,6 +83,19 @@ class Settings(BaseSettings):
     crypto_hard_stop_pct: float = -0.065
     total_account_hard_stop_pct: float = -0.075
 
+    stop_stock_style: str = "fixed"
+    stop_crypto_style: str = "trailing"
+    stop_stock_fallback_pct: float = 0.01
+    stop_crypto_fallback_pct: float = 0.015
+    stock_trailing_activation_pct: float = 0.01
+    stock_trailing_offset_pct: float = 0.0075
+    crypto_trailing_activation_pct: float = 0.015
+    crypto_trailing_offset_pct: float = 0.01
+    stock_step_trigger_pct: float = 0.02
+    stock_step_increment_pct: float = 0.01
+    crypto_step_trigger_pct: float = 0.025
+    crypto_step_increment_pct: float = 0.0125
+
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
         env_file_encoding="utf-8",

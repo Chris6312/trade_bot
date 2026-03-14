@@ -331,3 +331,85 @@ class ExecutionSyncStateRead(BaseModel):
     fill_count: int
     last_status: str
     last_error: str | None
+
+
+class StopStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    execution_order_id: int
+    execution_fill_id: int | None
+    risk_snapshot_id: int | None
+    asset_class: str
+    venue: str
+    mode: str
+    source: str
+    symbol: str
+    strategy_name: str
+    direction: str
+    timeframe: str
+    stop_style: str
+    status: str
+    entry_price: Decimal
+    initial_stop_price: Decimal
+    current_stop_price: Decimal
+    current_price: Decimal | None
+    highest_price: Decimal | None
+    trailing_activation_price: Decimal | None
+    trailing_offset_pct: Decimal | None
+    trailing_active: bool
+    trailing_activated_at: datetime | None
+    step_trigger_pct: Decimal | None
+    step_increment_pct: Decimal | None
+    step_level: int
+    next_step_trigger_price: Decimal | None
+    protected_quantity: Decimal | None
+    broker_stop_order_id: str | None
+    last_fill_at: datetime | None
+    last_evaluated_at: datetime | None
+    last_updated_at: datetime | None
+    update_count: int
+    last_error: str | None
+    payload: dict[str, Any] | None
+
+
+class StopUpdateHistoryRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    stop_state_id: int
+    asset_class: str
+    venue: str
+    mode: str
+    symbol: str
+    timeframe: str
+    event_timestamp: datetime
+    event_type: str
+    status: str
+    previous_stop_price: Decimal | None
+    new_stop_price: Decimal | None
+    reference_price: Decimal | None
+    high_watermark: Decimal | None
+    step_level: int | None
+    broker_stop_order_id: str | None
+    message: str | None
+    payload: dict[str, Any] | None
+
+
+class StopSyncStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_class: str
+    venue: str
+    mode: str
+    timeframe: str
+    last_evaluated_at: datetime | None
+    last_fill_at: datetime | None
+    filled_count: int
+    created_count: int
+    activated_count: int
+    updated_count: int
+    unchanged_count: int
+    failed_count: int
+    last_status: str
+    last_error: str | None
