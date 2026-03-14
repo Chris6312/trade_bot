@@ -62,3 +62,6 @@ frontend/logs/
 *.zip
 GPT-mini_changes/
 backups/
+
+# Supervisor runtime state
+scripts/.runtime/
