@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_db
 from backend.app.core.config import get_settings
-from backend.app.models.core import SystemEvent
 from backend.app.schemas.core import (
     ControlActionRequest,
     ControlActionResponse,
@@ -15,6 +14,7 @@ from backend.app.schemas.core import (
     FlattenRequest,
     KillSwitchToggleRequest,
 )
+from backend.app.services.operator_service import create_audit_event, create_system_event
 from backend.app.services.settings_service import get_setting, upsert_setting
 from backend.app.services.universe_service import list_universe_symbols, trading_date_for_now
 from backend.app.workers.candle_worker import SingleCandleWorker
@@ -68,6 +68,14 @@ def toggle_kill_switch(
         message=f"Kill switch {'enabled' if target_enabled else 'disabled'}.",
         payload={"enabled": target_enabled},
     )
+    create_audit_event(
+        db,
+        event_type="audit.kill_switch_toggled",
+        severity="warning" if target_enabled else "info",
+        message=f"Operator {'enabled' if target_enabled else 'disabled'} the master kill switch.",
+        payload={"enabled": target_enabled},
+    )
+    db.commit()
     return ControlActionResponse(
         action="toggle_kill_switch",
         status="completed",
@@ -173,6 +181,14 @@ def request_flatten(scope: str, payload: FlattenRequest, db: Session = Depends(g
         message=f"Manual flatten requested for {scope}.",
         payload={"scope": scope, "engage_kill_switch": payload.engage_kill_switch, "note": payload.note, "status": "manual_follow_up_required"},
     )
+    create_audit_event(
+        db,
+        event_type="audit.flatten_requested",
+        severity="warning",
+        message=f"Operator requested manual flatten for {scope}.",
+        payload={"scope": scope, "engage_kill_switch": payload.engage_kill_switch, "note": payload.note, "status": "manual_follow_up_required"},
+    )
+    db.commit()
     return ControlActionResponse(
         action=f"flatten_{scope}",
         status="queued_manual_action",
@@ -209,5 +225,12 @@ def _setting_to_bool(value: object) -> bool:
 
 
 def _create_event(db: Session, *, event_type: str, severity: str, message: str, payload: dict[str, object] | None = None) -> None:
-    db.add(SystemEvent(event_type=event_type, severity=severity, message=message, event_source="frontend_controls", payload=payload))
-    db.commit()
+    create_system_event(
+        db,
+        event_type=event_type,
+        severity=severity,
+        message=message,
+        event_source="frontend_controls",
+        payload=payload,
+        commit=True,
+    )

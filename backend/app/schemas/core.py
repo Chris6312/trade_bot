@@ -454,6 +454,31 @@ class PositionStateRead(BaseModel):
     payload: dict[str, Any] | None
 
 
+
+
+class PostTradeReviewRead(BaseModel):
+    asset_class: str
+    symbol: str
+    venue: str
+    mode: str
+    strategy_name: str
+    timeframe: str
+    order_status: str
+    fill_status: str | None = None
+    stop_status: str | None = None
+    position_status: str | None = None
+    reconciliation_status: str | None = None
+    candidate_timestamp: datetime | None = None
+    routed_at: datetime | None = None
+    fill_timestamp: datetime | None = None
+    audit_event_count: int = 0
+    review_notes: list[str] = Field(default_factory=list)
+    order: ExecutionOrderRead
+    fill: ExecutionFillRead | None = None
+    stop: StopStateRead | None = None
+    position: PositionStateRead | None = None
+    related_events: list[SystemEventRead] = Field(default_factory=list)
+
 class OpenOrderStateRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -588,6 +613,38 @@ class FeatureSyncStateRead(BaseModel):
     last_status: str
     last_error: str | None
 
+
+
+
+class ValidationRequest(BaseModel):
+    note: str | None = None
+
+
+class ValidationResultRead(BaseModel):
+    validation_type: str
+    asset_class: str | None = None
+    status: str
+    message: str
+    details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class LiveRolloutChecklistItemRead(BaseModel):
+    key: str
+    label: str
+    status: str
+    detail: str
+    action_required: str | None = None
+
+
+class LiveRolloutChecklistRead(BaseModel):
+    generated_at: datetime
+    overall_status: str
+    default_mode: str
+    stock_mode: str
+    crypto_mode: str
+    live_asset_count: int
+    items: list[LiveRolloutChecklistItemRead] = Field(default_factory=list)
 
 class ControlActionRequest(BaseModel):
     asset_class: Literal["stock", "crypto", "all"] = "all"

@@ -6,6 +6,7 @@ param(
     [switch]$NoFrontend,
     [switch]$NoLogTabs,
     [switch]$Force,
+    [switch]$KeepKillSwitchEnabled,
     [int]$PostgresTimeoutSeconds = 120,
     [int]$BackendTimeoutSeconds = 120,
     [int]$FrontendTimeoutSeconds = 120
@@ -206,6 +207,40 @@ function Wait-ForHttpOk {
     }
 
     throw "Timed out waiting for HTTP readiness at $Url"
+}
+
+function Clear-KillSwitchIfNeeded {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$BackendPort,
+        [Parameter(Mandatory = $true)]
+        [string]$ApiPrefix,
+        [switch]$KeepKillSwitchEnabled
+    )
+
+    if ($KeepKillSwitchEnabled) {
+        Write-Host 'Leaving kill switch enabled by request.' -ForegroundColor Yellow
+        return
+    }
+
+    $snapshotUrl = "http://localhost:$BackendPort$ApiPrefix/controls/snapshot"
+    $toggleUrl = "http://localhost:$BackendPort$ApiPrefix/controls/kill-switch/toggle"
+
+    try {
+        $snapshot = Invoke-RestMethod -Uri $snapshotUrl -Method Get -TimeoutSec 10
+        if (-not $snapshot.kill_switch_enabled) {
+            Write-Host 'Kill switch is already disabled for startup.' -ForegroundColor DarkGray
+            return
+        }
+
+        Write-Host 'Clearing persisted kill switch for startup...' -ForegroundColor Cyan
+        $payload = @{ enabled = $false } | ConvertTo-Json
+        $null = Invoke-RestMethod -Uri $toggleUrl -Method Post -ContentType 'application/json' -Body $payload -TimeoutSec 10
+        Write-Host 'Kill switch disabled for startup.' -ForegroundColor Green
+    }
+    catch {
+        throw "Backend is healthy, but kill switch reset failed: $($_.Exception.Message)"
+    }
 }
 
 function Invoke-LocalAlembic {
@@ -451,6 +486,7 @@ else {
 Write-Host '3/5 Starting backend...' -ForegroundColor Cyan
 docker compose up -d backend | Out-Null
 Wait-ForHttpOk -Url "http://localhost:$backendPort/health" -ExpectedJsonStatus 'ok' -TimeoutSeconds $BackendTimeoutSeconds
+Clear-KillSwitchIfNeeded -BackendPort $backendPort -ApiPrefix $apiPrefix -KeepKillSwitchEnabled:$KeepKillSwitchEnabled
 
 if (-not $NoFrontend) {
     Write-Host '4/5 Starting frontend...' -ForegroundColor Cyan

@@ -5,17 +5,30 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 
 
+def _script_path(name: str) -> Path:
+    exact = SCRIPTS_DIR / name
+    if exact.exists():
+        return exact
+
+    lowered = name.lower()
+    for path in SCRIPTS_DIR.iterdir():
+        if path.name.lower() == lowered:
+            return path
+
+    return exact
+
+
 def _read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
 def test_phase15_supervisor_scripts_exist() -> None:
-    assert (SCRIPTS_DIR / "Start-Bot.ps1").exists()
-    assert (SCRIPTS_DIR / "Stop-Bot.ps1").exists()
+    assert _script_path("Start-Bot.ps1").exists()
+    assert _script_path("Stop-Bot.ps1").exists()
 
 
 def test_start_bot_uses_ordered_startup_and_local_alembic() -> None:
-    script = _read_text(SCRIPTS_DIR / "Start-Bot.ps1")
+    script = _read_text(_script_path("Start-Bot.ps1"))
 
     postgres_step_index = script.index("Write-Host '1/5 Starting PostgreSQL...'")
     postgres_up_index = script.index("docker compose up -d postgres", postgres_step_index)
@@ -45,8 +58,27 @@ def test_start_bot_uses_ordered_startup_and_local_alembic() -> None:
     assert "Resolve-PythonExe" in script
 
 
+def test_start_bot_clears_persisted_kill_switch_by_default() -> None:
+    script = _read_text(_script_path("Start-Bot.ps1"))
+
+    health_wait_index = script.index(
+        'Wait-ForHttpOk -Url "http://localhost:$backendPort/health" -ExpectedJsonStatus \'ok\''
+    )
+    clear_index = script.index(
+        "Clear-KillSwitchIfNeeded -BackendPort $backendPort -ApiPrefix $apiPrefix -KeepKillSwitchEnabled:$KeepKillSwitchEnabled",
+        health_wait_index,
+    )
+    frontend_step_index = script.index("Write-Host '4/5 Starting frontend...'")
+
+    assert "[switch]$KeepKillSwitchEnabled" in script
+    assert "/controls/snapshot" in script
+    assert "/controls/kill-switch/toggle" in script
+    assert "enabled = $false" in script
+    assert health_wait_index < clear_index < frontend_step_index
+
+
 def test_start_bot_opens_operator_log_tabs() -> None:
-    script = _read_text(SCRIPTS_DIR / "Start-Bot.ps1")
+    script = _read_text(_script_path("Start-Bot.ps1"))
 
     assert "Trade_Bot - Backend Logs" in script
     assert "Trade_Bot - Worker Stream" in script
@@ -59,7 +91,7 @@ def test_start_bot_opens_operator_log_tabs() -> None:
 
 
 def test_stop_bot_engages_kill_switch_and_stops_cleanly() -> None:
-    script = _read_text(SCRIPTS_DIR / "Stop-Bot.ps1")
+    script = _read_text(_script_path("Stop-Bot.ps1"))
 
     kill_switch_index = script.index("/controls/kill-switch/toggle")
     frontend_stop_index = script.index("docker compose stop frontend")

@@ -13,6 +13,7 @@ from backend.app.common.adapters.utils import parse_datetime, parse_optional_dec
 from backend.app.core.config import Settings, get_settings
 from backend.app.models.core import ExecutionFill, ExecutionOrder, ExecutionSyncState, RiskSnapshot
 from backend.app.services.adapter_registry import AdapterRegistry
+from backend.app.services.operator_service import create_audit_event
 from backend.app.services.risk_service import VALID_ASSET_CLASSES, list_current_risk_snapshots
 from backend.app.services.settings_service import get_setting, resolve_bool_setting, resolve_str_setting
 
@@ -206,6 +207,15 @@ def rebuild_execution_for_asset_class(
     if not _asset_trading_enabled(db, asset_class=asset_class):
         blocked_count = len(accepted_rows)
         last_status = f"{asset_class}_trading_disabled"
+        previous_state = get_execution_sync_state(db, asset_class=asset_class, timeframe=timeframe)
+        if previous_state is None or previous_state.last_status != last_status:
+            create_audit_event(
+                db,
+                event_type="audit.execution_blocked",
+                severity="warning",
+                message=f"{asset_class.title()} execution is blocked because trading is disabled.",
+                payload={"asset_class": asset_class, "mode": route_target.mode, "venue": route_target.venue, "reason": last_status},
+            )
         _upsert_execution_sync_state(
             db,
             asset_class=asset_class,
@@ -244,6 +254,15 @@ def rebuild_execution_for_asset_class(
     if _kill_switch_enabled(db, settings=runtime_settings):
         blocked_count = len(accepted_rows)
         last_status = "kill_switch_blocked"
+        previous_state = get_execution_sync_state(db, asset_class=asset_class, timeframe=timeframe)
+        if previous_state is None or previous_state.last_status != last_status:
+            create_audit_event(
+                db,
+                event_type="audit.execution_blocked",
+                severity="warning",
+                message=f"{asset_class.title()} execution is blocked by the master kill switch.",
+                payload={"asset_class": asset_class, "mode": route_target.mode, "venue": route_target.venue, "reason": last_status},
+            )
         _upsert_execution_sync_state(
             db,
             asset_class=asset_class,
@@ -328,6 +347,21 @@ def rebuild_execution_for_asset_class(
                 order_record.decision_reason = TERMINAL_FAILURE_STATUS
                 order_record.error_message = str(exc)
                 order_record.payload = {**(order_record.payload or {}), "error": str(exc)}
+                create_audit_event(
+                    db,
+                    event_type="audit.order_route_failed",
+                    severity="error",
+                    message=f"Order routing failed for {risk_row.symbol} on {route_target.venue}.",
+                    payload={
+                        "asset_class": risk_row.asset_class,
+                        "symbol": risk_row.symbol,
+                        "mode": route_target.mode,
+                        "venue": route_target.venue,
+                        "client_order_id": client_order_id,
+                        "risk_snapshot_id": risk_row.id,
+                        "error": str(exc),
+                    },
+                )
                 failed_count += 1
                 last_error = str(exc)
                 last_status = TERMINAL_FAILURE_STATUS
@@ -338,12 +372,44 @@ def rebuild_execution_for_asset_class(
             order_record.status = str(result.status or "submitted")
             order_record.decision_reason = "execution_routed"
             order_record.payload = {**(order_record.payload or {}), "broker_response": result.raw}
+            create_audit_event(
+                db,
+                event_type="audit.order_routed",
+                severity="info",
+                message=f"Order routed for {risk_row.symbol} via {order_record.venue} in {order_record.mode} mode.",
+                payload={
+                    "asset_class": order_record.asset_class,
+                    "symbol": order_record.symbol,
+                    "mode": order_record.mode,
+                    "venue": order_record.venue,
+                    "status": order_record.status,
+                    "client_order_id": order_record.client_order_id,
+                    "broker_order_id": order_record.broker_order_id,
+                    "risk_snapshot_id": risk_row.id,
+                },
+            )
             routed_count += 1
 
             fill = _build_fill_record(order_record=order_record, risk_row=risk_row, result=result, routed_at=target_time)
             if fill is not None:
                 db.add(fill)
                 order_record.fill_count = 1
+                create_audit_event(
+                    db,
+                    event_type="audit.order_filled",
+                    severity="info",
+                    message=f"Fill persisted for {order_record.symbol} with status {fill.status}.",
+                    payload={
+                        "asset_class": order_record.asset_class,
+                        "symbol": order_record.symbol,
+                        "mode": order_record.mode,
+                        "venue": order_record.venue,
+                        "status": fill.status,
+                        "client_order_id": order_record.client_order_id,
+                        "broker_order_id": order_record.broker_order_id,
+                        "venue_fill_id": fill.venue_fill_id,
+                    },
+                )
                 fill_count += 1
     finally:
         close_method = getattr(adapter, "close", None)

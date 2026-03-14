@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.config import Settings, get_settings
 from backend.app.models.core import AccountSnapshot, FeatureSnapshot, RiskSnapshot, RiskSyncState, StrategySnapshot
+from backend.app.services.operator_service import create_audit_event
 from backend.app.services.settings_service import get_setting
 from backend.app.services.strategy_service import VALID_ASSET_CLASSES, list_current_strategy_snapshots
 
@@ -167,6 +168,8 @@ def rebuild_risk_snapshots_for_asset_class(
     runtime_settings = settings or get_settings()
     config = _load_risk_config(db, asset_class=asset_class, settings=runtime_settings)
     computed_time = _ensure_utc(computed_at) or datetime.now(UTC)
+    previous_sync_state = get_risk_sync_state(db, asset_class=asset_class, timeframe=timeframe)
+    previous_breaker_status = previous_sync_state.breaker_status if previous_sync_state is not None else None
     strategy_rows = list_current_strategy_snapshots(db, asset_class=asset_class, timeframe=timeframe)
     if not strategy_rows:
         _upsert_risk_sync_state(
@@ -324,6 +327,22 @@ def rebuild_risk_snapshots_for_asset_class(
         last_status=last_status,
         last_error=None,
     )
+    if breaker_status is not None and breaker_status != previous_breaker_status:
+        create_audit_event(
+            db,
+            event_type="audit.circuit_breaker_observed",
+            severity="error" if "hard" in breaker_status or "total" in breaker_status else "warning",
+            message=f"{asset_class.title()} circuit breaker observed as {breaker_status}.",
+            payload={"asset_class": asset_class, "timeframe": timeframe, "breaker_status": breaker_status, "last_status": last_status},
+        )
+    elif previous_breaker_status is not None and breaker_status is None:
+        create_audit_event(
+            db,
+            event_type="audit.circuit_breaker_cleared",
+            severity="info",
+            message=f"{asset_class.title()} circuit breaker has cleared.",
+            payload={"asset_class": asset_class, "timeframe": timeframe, "previous_breaker_status": previous_breaker_status, "last_status": last_status},
+        )
     db.commit()
     return RiskPersistenceSummary(
         asset_class=asset_class,
