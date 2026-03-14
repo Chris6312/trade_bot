@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     broker_request_timeout_seconds: float = 10.0
     kraken_quote_currency: str = "ZUSD"
     kraken_trade_balance_asset: str = "ZUSD"
+    stock_default_backfill_bars: int = 500
+    crypto_default_backfill_bars: int = 720
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,

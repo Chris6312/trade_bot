@@ -1,5 +1,8 @@
 from backend.app.models.core import (
     AccountSnapshot,
+    Candle,
+    CandleFreshness,
+    CandleSyncState,
     Setting,
     SystemEvent,
     WorkflowRun,
@@ -8,6 +11,9 @@ from backend.app.models.core import (
 
 __all__ = [
     "AccountSnapshot",
+    "Candle",
+    "CandleFreshness",
+    "CandleSyncState",
     "Setting",
     "SystemEvent",
     "WorkflowRun",

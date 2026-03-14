@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -111,3 +111,74 @@ class SystemEvent(Base):
         index=True,
         nullable=False,
     )
+
+
+class Candle(TimestampMixin, Base):
+    __tablename__ = "candles"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_class",
+            "symbol",
+            "timeframe",
+            "timestamp",
+            name="uq_candles_asset_symbol_timeframe_timestamp",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    open: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    high: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    low: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    close: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    volume: Mapped[Decimal] = mapped_column(Numeric(28, 8), nullable=False)
+    vwap: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    trade_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class CandleSyncState(TimestampMixin, Base):
+    __tablename__ = "candle_sync_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_class",
+            "symbol",
+            "timeframe",
+            name="uq_candle_sync_states_asset_symbol_timeframe",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_candle_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str] = mapped_column(String(20), default="idle", nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+
+
+class CandleFreshness(TimestampMixin, Base):
+    __tablename__ = "candle_freshness"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_class",
+            "symbol",
+            "timeframe",
+            name="uq_candle_freshness_asset_symbol_timeframe",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_candle_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fresh_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
