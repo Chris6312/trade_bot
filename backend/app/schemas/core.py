@@ -157,3 +157,48 @@ class RegimeSyncStateRead(BaseModel):
     symbol_count: int
     last_status: str
     last_error: str | None
+
+
+class StrategySnapshotRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    asset_class: str
+    venue: str
+    source: str
+    symbol: str
+    strategy_name: str
+    direction: str
+    timeframe: str
+    candidate_timestamp: datetime
+    computed_at: datetime
+    regime: str | None
+    entry_policy: str | None
+    status: str
+    readiness_score: Decimal
+    composite_score: Decimal
+    threshold_score: Decimal
+    trend_score: Decimal
+    participation_score: Decimal
+    liquidity_score: Decimal
+    stability_score: Decimal
+    blocked_reasons: list[str] | None
+    decision_reason: str | None
+    payload: dict[str, Any] | None
+
+
+class StrategySyncStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_class: str
+    venue: str
+    timeframe: str
+    last_computed_at: datetime | None
+    last_candidate_at: datetime | None
+    candidate_count: int
+    ready_count: int
+    blocked_count: int
+    regime: str | None
+    entry_policy: str | None
+    last_status: str
+    last_error: str | None
