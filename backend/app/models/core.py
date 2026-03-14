@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
@@ -111,6 +111,49 @@ class SystemEvent(Base):
         index=True,
         nullable=False,
     )
+
+
+class UniverseRun(TimestampMixin, Base):
+    __tablename__ = "universe_runs"
+    __table_args__ = (
+        UniqueConstraint("asset_class", "trade_date", name="uq_universe_runs_asset_class_trade_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    trade_date: Mapped[date] = mapped_column(Date(), index=True, nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    snapshot_path: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    constituents: Mapped[list["UniverseConstituent"]] = relationship(
+        back_populates="universe_run",
+        cascade="all, delete-orphan",
+        order_by="UniverseConstituent.rank.asc()",
+    )
+
+
+class UniverseConstituent(TimestampMixin, Base):
+    __tablename__ = "universe_constituents"
+    __table_args__ = (
+        UniqueConstraint("universe_run_id", "symbol", name="uq_universe_constituents_run_symbol"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    universe_run_id: Mapped[int] = mapped_column(ForeignKey("universe_runs.id", ondelete="CASCADE"), index=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    source: Mapped[str] = mapped_column(String(30), nullable=False)
+    selection_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    universe_run: Mapped[UniverseRun] = relationship(back_populates="constituents")
 
 
 class Candle(TimestampMixin, Base):

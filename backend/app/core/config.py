@@ -43,6 +43,17 @@ class Settings(BaseSettings):
     broker_request_timeout_seconds: float = 10.0
     kraken_quote_currency: str = "ZUSD"
     kraken_trade_balance_asset: str = "ZUSD"
+
+    ai_provider: str = "openai"
+    ai_model: str = "gpt-5-mini"
+    ai_enabled: bool = True
+    ai_run_once_daily: bool = True
+    ai_premarket_time_et: str = "08:40"
+    ai_api_url: str = "https://api.openai.com/v1"
+    ai_api_key: str | None = None
+    stock_universe_source: str = "ai"
+    stock_universe_max_size: int = 50
+
     stock_default_backfill_bars: int = 500
     crypto_default_backfill_bars: int = 720
 

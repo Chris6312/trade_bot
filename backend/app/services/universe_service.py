@@ -1,0 +1,316 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
+from pathlib import Path
+from typing import Any, Iterable
+from zoneinfo import ZoneInfo
+
+from sqlalchemy.orm import Session
+
+from backend.app.core.config import PROJECT_ROOT
+from backend.app.models.core import UniverseConstituent, UniverseRun
+
+ALLOWED_ETFS = {"SPY", "QQQ"}
+CRYPTO_TOP_15 = (
+    "XBTUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "XRPUSD",
+    "ADAUSD",
+    "DOGEUSD",
+    "AVAXUSD",
+    "LINKUSD",
+    "LTCUSD",
+    "DOTUSD",
+    "BCHUSD",
+    "TRXUSD",
+    "XLMUSD",
+    "ATOMUSD",
+    "NEARUSD",
+)
+
+
+@dataclass(slots=True, frozen=True)
+class UniverseSymbolRecord:
+    symbol: str
+    rank: int
+    source: str
+    venue: str
+    asset_class: str
+    selection_reason: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+
+
+def ensure_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def trading_date_for_now(now: datetime | None) -> date:
+    at = ensure_utc(now) or datetime.now(UTC)
+    return at.astimezone(ZoneInfo("America/New_York")).date()
+
+
+def get_universe_run(db: Session, *, asset_class: str, trade_date: date) -> UniverseRun | None:
+    return (
+        db.query(UniverseRun)
+        .filter(
+            UniverseRun.asset_class == asset_class,
+            UniverseRun.trade_date == trade_date,
+        )
+        .one_or_none()
+    )
+
+
+def list_universe_symbols(db: Session, *, asset_class: str, trade_date: date) -> list[UniverseSymbolRecord]:
+    run = get_universe_run(db, asset_class=asset_class, trade_date=trade_date)
+    if run is None or run.status != "resolved":
+        return []
+    return [
+        UniverseSymbolRecord(
+            symbol=item.symbol,
+            rank=item.rank,
+            source=item.source,
+            venue=item.venue,
+            asset_class=item.asset_class,
+            selection_reason=item.selection_reason,
+            payload=item.payload or {},
+        )
+        for item in run.constituents
+    ]
+
+
+def persist_universe_run(
+    db: Session,
+    *,
+    asset_class: str,
+    venue: str,
+    trade_date: date,
+    source: str,
+    status: str,
+    symbols: Iterable[UniverseSymbolRecord],
+    snapshot_path: str | None = None,
+    resolved_at: datetime | None = None,
+    last_error: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> UniverseRun:
+    run = get_universe_run(db, asset_class=asset_class, trade_date=trade_date)
+    if run is None:
+        run = UniverseRun(
+            asset_class=asset_class,
+            venue=venue,
+            trade_date=trade_date,
+            source=source,
+            status=status,
+            resolved_at=ensure_utc(resolved_at),
+            snapshot_path=snapshot_path,
+            last_error=last_error,
+            payload=payload,
+        )
+        db.add(run)
+        db.flush()
+    else:
+        run.venue = venue
+        run.source = source
+        run.status = status
+        run.resolved_at = ensure_utc(resolved_at)
+        run.snapshot_path = snapshot_path
+        run.last_error = last_error
+        run.payload = payload
+        run.constituents.clear()
+        db.flush()
+
+    for item in symbols:
+        run.constituents.append(
+            UniverseConstituent(
+                asset_class=item.asset_class,
+                venue=item.venue,
+                symbol=item.symbol,
+                rank=item.rank,
+                source=item.source,
+                selection_reason=item.selection_reason,
+                payload=item.payload,
+            )
+        )
+
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def stock_universe_ready(db: Session, *, trade_date: date) -> bool:
+    run = get_universe_run(db, asset_class="stock", trade_date=trade_date)
+    return bool(run and run.status == "resolved" and run.constituents)
+
+
+def default_snapshot_path(*, asset_class: str, trade_date: date) -> Path:
+    directory = PROJECT_ROOT / "backups" / "universe_snapshots"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"{asset_class}_universe_{trade_date.isoformat()}.jsonl"
+
+
+def write_snapshot(*, path: Path, symbols: Iterable[UniverseSymbolRecord], trade_date: date, resolved_at: datetime) -> str:
+    resolved = ensure_utc(resolved_at) or datetime.now(UTC)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        for item in symbols:
+            row = {
+                "symbol": item.symbol,
+                "rank": item.rank,
+                "source": item.source,
+                "venue": item.venue,
+                "asset_class": item.asset_class,
+                "selection_reason": item.selection_reason,
+                "payload": item.payload,
+                "trade_date": trade_date.isoformat(),
+                "resolved_at": resolved.isoformat(),
+            }
+            fh.write(json.dumps(row, default=str) + "\n")
+    return str(path)
+
+
+def read_snapshot(*, path: str | Path) -> list[UniverseSymbolRecord]:
+    file_path = Path(path)
+    if not file_path.exists():
+        return []
+
+    records: list[UniverseSymbolRecord] = []
+    with file_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or "").upper()
+            if not symbol:
+                continue
+            records.append(
+                UniverseSymbolRecord(
+                    symbol=symbol,
+                    rank=int(item.get("rank") or len(records) + 1),
+                    source=str(item.get("source") or "snapshot"),
+                    venue=str(item.get("venue") or "unknown"),
+                    asset_class=str(item.get("asset_class") or "stock"),
+                    selection_reason=item.get("selection_reason"),
+                    payload=item.get("payload") or {},
+                )
+            )
+    return records
+
+
+def normalize_stock_candidates(
+    *,
+    candidates: Iterable[dict[str, Any]],
+    asset_metadata: dict[str, dict[str, Any]] | None = None,
+    max_size: int,
+    source: str,
+    venue: str = "alpaca",
+) -> list[UniverseSymbolRecord]:
+    metadata = asset_metadata or {}
+    normalized: list[UniverseSymbolRecord] = []
+    seen: set[str] = set()
+
+    ordered_candidates = list(candidates)
+    ordered_candidates.sort(
+        key=lambda item: (
+            -float(item.get("ai_rank_score", 0.0) or 0.0),
+            -float(item.get("volume", 0.0) or 0.0),
+            str(item.get("symbol") or ""),
+        )
+    )
+
+    for candidate in ordered_candidates:
+        symbol = str(candidate.get("symbol") or "").upper().strip()
+        if not symbol or symbol in seen:
+            continue
+
+        asset = metadata.get(symbol, {})
+        if not _is_tradable_us_equity(symbol=symbol, candidate=candidate, asset=asset):
+            continue
+        if _is_excluded_etf(symbol=symbol, candidate=candidate, asset=asset):
+            continue
+
+        seen.add(symbol)
+        normalized.append(
+            UniverseSymbolRecord(
+                symbol=symbol,
+                rank=len(normalized) + 1,
+                source=source,
+                venue=venue,
+                asset_class="stock",
+                selection_reason=str(candidate.get("brief_reason") or candidate.get("reason") or "")[:200] or None,
+                payload={**asset, **candidate},
+            )
+        )
+        if len(normalized) >= max_size:
+            break
+
+    return normalized
+
+
+def crypto_universe_records() -> list[UniverseSymbolRecord]:
+    return [
+        UniverseSymbolRecord(
+            symbol=symbol,
+            rank=index,
+            source="static",
+            venue="kraken",
+            asset_class="crypto",
+            selection_reason="hard_coded_top_15",
+            payload={},
+        )
+        for index, symbol in enumerate(CRYPTO_TOP_15, start=1)
+    ]
+
+
+def _is_tradable_us_equity(*, symbol: str, candidate: dict[str, Any], asset: dict[str, Any]) -> bool:
+    if symbol in ALLOWED_ETFS:
+        return True
+
+    for row in (candidate, asset):
+        status = row.get("status")
+        if isinstance(status, str) and status.lower() not in {"active", "tradable"}:
+            return False
+        tradable = row.get("tradable")
+        if tradable is False:
+            return False
+        asset_class = row.get("class") or row.get("asset_class")
+        if isinstance(asset_class, str) and asset_class.lower() not in {"us_equity", "equity", "stock", ""}:
+            return False
+
+    return True
+
+
+def _is_excluded_etf(*, symbol: str, candidate: dict[str, Any], asset: dict[str, Any]) -> bool:
+    if symbol in ALLOWED_ETFS:
+        return False
+
+    for row in (candidate, asset):
+        is_etf = row.get("is_etf")
+        if isinstance(is_etf, bool):
+            return is_etf
+
+        for key in ("type", "asset_type", "security_type", "category"):
+            value = row.get(key)
+            if isinstance(value, str) and "etf" in value.lower():
+                return True
+
+        attributes = row.get("attributes")
+        if isinstance(attributes, list):
+            if any("etf" in str(item).lower() for item in attributes):
+                return True
+
+        name = row.get("name")
+        if isinstance(name, str):
+            upper_name = name.upper()
+            if " ETF" in upper_name or upper_name.endswith("ETF"):
+                return True
+
+    return False

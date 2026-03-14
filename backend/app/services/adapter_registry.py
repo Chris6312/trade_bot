@@ -7,6 +7,7 @@ from backend.app.crypto.data.kraken_market_data import KrakenMarketDataAdapter
 from backend.app.stocks.brokers.alpaca_stock_paper import AlpacaStockPaperAdapter
 from backend.app.stocks.brokers.public_trading import PublicTradingAdapter
 from backend.app.stocks.data.alpaca_stock_ohlcv import AlpacaStockOhlcvAdapter
+from backend.app.stocks.data.alpaca_stock_screener import AlpacaStockScreenerAdapter
 
 
 class AdapterRegistry:
@@ -30,3 +31,7 @@ class AdapterRegistry:
 
     def alpaca_stock_ohlcv(self) -> AlpacaStockOhlcvAdapter:
         return AlpacaStockOhlcvAdapter(self.settings)
+
+
+    def alpaca_stock_screener(self) -> AlpacaStockScreenerAdapter:
+        return AlpacaStockScreenerAdapter(self.settings)

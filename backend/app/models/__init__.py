@@ -5,6 +5,8 @@ from backend.app.models.core import (
     CandleSyncState,
     Setting,
     SystemEvent,
+    UniverseConstituent,
+    UniverseRun,
     WorkflowRun,
     WorkflowStageStatus,
 )
@@ -16,6 +18,8 @@ __all__ = [
     "CandleSyncState",
     "Setting",
     "SystemEvent",
+    "UniverseConstituent",
+    "UniverseRun",
     "WorkflowRun",
     "WorkflowStageStatus",
 ]
