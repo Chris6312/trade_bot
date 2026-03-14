@@ -26,6 +26,24 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:4174,http://127.0.0.1:4174"
     vite_api_base_url: str = "http://localhost:8101"
 
+    alpaca_paper_key: str | None = None
+    alpaca_paper_secret: str | None = None
+    alpaca_paper_key_crypto: str | None = None
+    alpaca_paper_secret_crypto: str | None = None
+    kraken_api_key: str | None = None
+    kraken_api_secret: str | None = None
+    public_api_secret: str | None = None
+    public_account_id: str | None = None
+    public_access_token_validity_minutes: int = 60
+
+    kraken_api_base_url: str = "https://api.kraken.com/0"
+    alpaca_trading_api_base_url: str = "https://paper-api.alpaca.markets"
+    alpaca_market_data_base_url: str = "https://data.alpaca.markets"
+    public_api_base_url: str = "https://api.public.com"
+    broker_request_timeout_seconds: float = 10.0
+    kraken_quote_currency: str = "ZUSD"
+    kraken_trade_balance_asset: str = "ZUSD"
+
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
         env_file_encoding="utf-8",

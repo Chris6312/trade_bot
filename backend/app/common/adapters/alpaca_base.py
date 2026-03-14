@@ -1,0 +1,112 @@
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+import httpx
+
+from backend.app.common.adapters.errors import AdapterAuthenticationError, AdapterParseError
+from backend.app.common.adapters.http import JsonApiClient
+from backend.app.common.adapters.models import AccountPosition, AccountState, OrderRequest, OrderResult
+from backend.app.common.adapters.utils import parse_decimal, parse_optional_decimal
+
+logger = logging.getLogger(__name__)
+
+
+class AlpacaPaperTradingAdapterBase:
+    venue = "alpaca"
+    mode = "paper"
+    asset_class = "unknown"
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None,
+        api_secret: str | None,
+        base_url: str,
+        label: str,
+        transport: httpx.BaseTransport | None = None,
+        account_currency: str = "USD",
+    ) -> None:
+        if not api_key or not api_secret:
+            raise AdapterAuthenticationError(f"{label} credentials are not configured")
+
+        self._account_currency = account_currency
+        self._client = JsonApiClient(
+            base_url=base_url,
+            label=label,
+            default_headers={
+                "APCA-API-KEY-ID": api_key,
+                "APCA-API-SECRET-KEY": api_secret,
+            },
+            transport=transport,
+        )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def get_account_state(self) -> AccountState:
+        account_payload = self._client.request_json("GET", "/v2/account")
+        positions_payload = self._client.request_json("GET", "/v2/positions")
+        if not isinstance(positions_payload, list):
+            raise AdapterParseError("Alpaca positions payload must be a list")
+
+        positions = tuple(self._parse_position(item) for item in positions_payload)
+        account_id = str(account_payload.get("id") or "alpaca-paper")
+        return AccountState(
+            venue=self.venue,
+            asset_class=self.asset_class,
+            mode=self.mode,
+            account_id=account_id,
+            currency=self._account_currency,
+            equity=parse_decimal(account_payload.get("equity"), field_name="equity"),
+            cash=parse_decimal(account_payload.get("cash"), field_name="cash"),
+            buying_power=parse_optional_decimal(account_payload.get("buying_power")),
+            positions=positions,
+            raw={"account": account_payload, "positions": positions_payload},
+        )
+
+    def place_order(self, request: OrderRequest) -> OrderResult:
+        payload: dict[str, Any] = {
+            "symbol": request.symbol,
+            "side": request.side.lower(),
+            "type": request.order_type.lower(),
+            "time_in_force": request.time_in_force.lower(),
+        }
+        if request.quantity is not None:
+            payload["qty"] = str(request.quantity)
+        if request.notional is not None:
+            payload["notional"] = str(request.notional)
+        if request.limit_price is not None:
+            payload["limit_price"] = str(request.limit_price)
+        if request.stop_price is not None:
+            payload["stop_price"] = str(request.stop_price)
+        if request.client_order_id:
+            payload["client_order_id"] = request.client_order_id
+
+        response = self._client.request_json("POST", "/v2/orders", json=payload)
+        order_id = str(response.get("id") or response.get("client_order_id") or "submitted")
+        status = str(response.get("status") or "submitted")
+        return OrderResult(
+            venue=self.venue,
+            asset_class=self.asset_class,
+            order_id=order_id,
+            status=status,
+            client_order_id=str(response.get("client_order_id")) if response.get("client_order_id") else request.client_order_id,
+            raw=response,
+        )
+
+    def _parse_position(self, payload: dict[str, Any]) -> AccountPosition:
+        if not isinstance(payload, dict):
+            raise AdapterParseError("Alpaca position row must be an object")
+
+        return AccountPosition(
+            symbol=str(payload.get("symbol") or payload.get("asset_id") or "unknown"),
+            quantity=parse_decimal(payload.get("qty"), field_name="qty"),
+            market_value=parse_optional_decimal(payload.get("market_value")),
+            cost_basis=parse_optional_decimal(payload.get("cost_basis")),
+            average_entry_price=parse_optional_decimal(payload.get("avg_entry_price")),
+            side="long" if str(payload.get("side", "long")).lower() != "short" else "short",
+            asset_class=self.asset_class,
+            raw=payload,
+        )
