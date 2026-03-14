@@ -4,12 +4,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.routes.account_snapshots import router as account_snapshot_router
+from backend.app.api.routes.controls import router as controls_router
+from backend.app.api.routes.data import router as data_router
 from backend.app.api.routes.execution import router as execution_router
 from backend.app.api.routes.health import router as health_router
 from backend.app.api.routes.positions import router as position_router
 from backend.app.api.routes.regime import router as regime_router
 from backend.app.api.routes.risk import router as risk_router
 from backend.app.api.routes.settings import router as settings_router
+from backend.app.api.routes.universe import router as universe_router
 from backend.app.api.routes.stops import router as stop_router
 from backend.app.api.routes.strategy import router as strategy_router
 from backend.app.api.routes.system_events import router as system_event_router
@@ -42,6 +45,9 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(health_router, prefix=settings.api_v1_prefix)
 app.include_router(settings_router, prefix=settings.api_v1_prefix)
+app.include_router(controls_router, prefix=settings.api_v1_prefix)
+app.include_router(data_router, prefix=settings.api_v1_prefix)
+app.include_router(universe_router, prefix=settings.api_v1_prefix)
 app.include_router(workflow_router, prefix=settings.api_v1_prefix)
 app.include_router(account_snapshot_router, prefix=settings.api_v1_prefix)
 app.include_router(system_event_router, prefix=settings.api_v1_prefix)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -510,3 +510,106 @@ class PositionSyncStateRead(BaseModel):
     unrealized_pnl: Decimal
     last_status: str
     last_error: str | None
+
+
+class UniverseConstituentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    universe_run_id: int
+    asset_class: str
+    venue: str
+    symbol: str
+    rank: int
+    source: str
+    selection_reason: str | None
+    payload: dict[str, Any] | None
+
+
+class UniverseRunRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    asset_class: str
+    venue: str
+    trade_date: date
+    source: str
+    status: str
+    resolved_at: datetime | None
+    snapshot_path: str | None
+    last_error: str | None
+    payload: dict[str, Any] | None
+    constituents: list[UniverseConstituentRead] = Field(default_factory=list)
+
+
+class CandleSyncStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_class: str
+    venue: str
+    symbol: str
+    timeframe: str
+    last_synced_at: datetime | None
+    last_candle_at: datetime | None
+    last_status: str
+    last_error: str | None
+
+
+class CandleFreshnessRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_class: str
+    venue: str
+    symbol: str
+    timeframe: str
+    last_synced_at: datetime | None
+    last_candle_at: datetime | None
+    fresh_through: datetime | None
+
+
+class FeatureSyncStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_class: str
+    venue: str
+    symbol: str
+    timeframe: str
+    last_computed_at: datetime | None
+    last_candle_at: datetime | None
+    feature_count: int
+    last_status: str
+    last_error: str | None
+
+
+class ControlActionRequest(BaseModel):
+    asset_class: Literal["stock", "crypto", "all"] = "all"
+    timeframe: str | None = None
+    force: bool = False
+    symbols: list[str] | None = None
+
+
+class KillSwitchToggleRequest(BaseModel):
+    enabled: bool | None = None
+
+
+class FlattenRequest(BaseModel):
+    engage_kill_switch: bool = True
+    note: str | None = None
+
+
+class ControlActionResponse(BaseModel):
+    action: str
+    status: str
+    message: str
+    details: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: datetime
+
+
+class ControlSnapshotRead(BaseModel):
+    kill_switch_enabled: bool
+    default_mode: str
+    stock_mode: str
+    crypto_mode: str
+    stock_trading_enabled: bool
+    crypto_trading_enabled: bool
+    last_updated_at: datetime | None = None
