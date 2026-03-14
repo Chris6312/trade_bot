@@ -121,3 +121,39 @@ class SystemEventRead(BaseModel):
     event_source: str | None
     payload: dict[str, Any] | None
     created_at: datetime
+
+
+class RegimeSnapshotRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    asset_class: str
+    venue: str
+    source: str
+    timeframe: str
+    regime_timestamp: datetime
+    computed_at: datetime
+    regime: str
+    entry_policy: str
+    symbol_count: int
+    bull_score: Decimal
+    breadth_ratio: Decimal
+    benchmark_support_ratio: Decimal
+    participation_ratio: Decimal
+    volatility_support_ratio: Decimal
+    payload: dict[str, Any] | None
+
+
+class RegimeSyncStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_class: str
+    venue: str
+    timeframe: str
+    last_computed_at: datetime | None
+    last_feature_at: datetime | None
+    regime: str | None
+    entry_policy: str | None
+    symbol_count: int
+    last_status: str
+    last_error: str | None

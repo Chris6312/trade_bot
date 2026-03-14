@@ -215,6 +215,58 @@ class FeatureSyncState(TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
 
 
+class RegimeSnapshot(TimestampMixin, Base):
+    __tablename__ = "regime_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_class",
+            "timeframe",
+            "regime_timestamp",
+            name="uq_regime_snapshots_asset_timeframe_timestamp",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    regime_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    regime: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    entry_policy: Mapped[str] = mapped_column(String(20), nullable=False)
+    symbol_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    bull_score: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    breadth_ratio: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    benchmark_support_ratio: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    participation_ratio: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    volatility_support_ratio: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class RegimeSyncState(TimestampMixin, Base):
+    __tablename__ = "regime_sync_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_class",
+            "timeframe",
+            name="uq_regime_sync_states_asset_timeframe",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    last_computed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_feature_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    regime: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    entry_policy: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    symbol_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_status: Mapped[str] = mapped_column(String(20), default="idle", nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+
+
 class Candle(TimestampMixin, Base):
     __tablename__ = "candles"
     __table_args__ = (
