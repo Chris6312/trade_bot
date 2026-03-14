@@ -14,21 +14,21 @@ from backend.app.models.core import UniverseConstituent, UniverseRun
 
 ALLOWED_ETFS = {"SPY", "QQQ"}
 CRYPTO_TOP_15 = (
-    "XBTUSD",
-    "ETHUSD",
-    "SOLUSD",
-    "XRPUSD",
-    "ADAUSD",
-    "DOGEUSD",
-    "AVAXUSD",
-    "LINKUSD",
-    "LTCUSD",
-    "DOTUSD",
-    "BCHUSD",
-    "TRXUSD",
-    "XLMUSD",
-    "ATOMUSD",
-    "NEARUSD",
+    {"symbol": "XBTUSD", "display_symbol": "BTC/USD", "display_name": "Bitcoin", "base_asset": "BTC"},
+    {"symbol": "ETHUSD", "display_symbol": "ETH/USD", "display_name": "Ethereum", "base_asset": "ETH"},
+    {"symbol": "SOLUSD", "display_symbol": "SOL/USD", "display_name": "Solana", "base_asset": "SOL"},
+    {"symbol": "XRPUSD", "display_symbol": "XRP/USD", "display_name": "XRP", "base_asset": "XRP"},
+    {"symbol": "ADAUSD", "display_symbol": "ADA/USD", "display_name": "Cardano", "base_asset": "ADA"},
+    {"symbol": "XDGUSD", "display_symbol": "DOGE/USD", "display_name": "Dogecoin", "base_asset": "DOGE"},
+    {"symbol": "AVAXUSD", "display_symbol": "AVAX/USD", "display_name": "Avalanche", "base_asset": "AVAX"},
+    {"symbol": "LINKUSD", "display_symbol": "LINK/USD", "display_name": "Chainlink", "base_asset": "LINK"},
+    {"symbol": "LTCUSD", "display_symbol": "LTC/USD", "display_name": "Litecoin", "base_asset": "LTC"},
+    {"symbol": "DOTUSD", "display_symbol": "DOT/USD", "display_name": "Polkadot", "base_asset": "DOT"},
+    {"symbol": "BCHUSD", "display_symbol": "BCH/USD", "display_name": "Bitcoin Cash", "base_asset": "BCH"},
+    {"symbol": "TRXUSD", "display_symbol": "TRX/USD", "display_name": "TRON", "base_asset": "TRX"},
+    {"symbol": "XLMUSD", "display_symbol": "XLM/USD", "display_name": "Stellar", "base_asset": "XLM"},
+    {"symbol": "ATOMUSD", "display_symbol": "ATOM/USD", "display_name": "Cosmos", "base_asset": "ATOM"},
+    {"symbol": "NEARUSD", "display_symbol": "NEAR/USD", "display_name": "NEAR Protocol", "base_asset": "NEAR"},
 )
 
 
@@ -258,15 +258,21 @@ def normalize_stock_candidates(
 def crypto_universe_records() -> list[UniverseSymbolRecord]:
     return [
         UniverseSymbolRecord(
-            symbol=symbol,
+            symbol=str(item["symbol"]),
             rank=index,
             source="static",
             venue="kraken",
             asset_class="crypto",
             selection_reason="hard_coded_top_15",
-            payload={},
+            payload={
+                "kraken_pair": str(item["symbol"]),
+                "display_symbol": str(item["display_symbol"]),
+                "display_name": str(item["display_name"]),
+                "base_asset": str(item["base_asset"]),
+                "quote_asset": "USD",
+            },
         )
-        for index, symbol in enumerate(CRYPTO_TOP_15, start=1)
+        for index, item in enumerate(CRYPTO_TOP_15, start=1)
     ]
 
 

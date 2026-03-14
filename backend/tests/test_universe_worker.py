@@ -208,6 +208,11 @@ def test_hard_coded_kraken_top_15_crypto_universe_is_available_every_cycle(
     assert summary.source == "static"
     assert len(summary.symbols) == 15
     assert summary.symbols[0] == "XBTUSD"
+    assert "XDGUSD" in summary.symbols
+    run = db_session.query(UniverseRun).filter(UniverseRun.asset_class == "crypto").one()
+    doge_row = next(item for item in run.constituents if item.symbol == "XDGUSD")
+    assert doge_row.payload["display_symbol"] == "DOGE/USD"
+    assert doge_row.payload["display_name"] == "Dogecoin"
     cached = worker.resolve_crypto_universe(now=datetime(2026, 3, 14, 14, 10, tzinfo=UTC))
     assert cached.from_cache is True
     assert cached.symbols == summary.symbols

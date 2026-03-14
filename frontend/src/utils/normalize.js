@@ -6,6 +6,25 @@ const MODE_OPTIONS = [
 
 const YES_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled']);
 
+
+const KRAKEN_PAIR_DISPLAY_MAP = {
+  XBTUSD: { displaySymbol: 'BTC/USD', displayName: 'Bitcoin' },
+  ETHUSD: { displaySymbol: 'ETH/USD', displayName: 'Ethereum' },
+  SOLUSD: { displaySymbol: 'SOL/USD', displayName: 'Solana' },
+  XRPUSD: { displaySymbol: 'XRP/USD', displayName: 'XRP' },
+  ADAUSD: { displaySymbol: 'ADA/USD', displayName: 'Cardano' },
+  XDGUSD: { displaySymbol: 'DOGE/USD', displayName: 'Dogecoin' },
+  AVAXUSD: { displaySymbol: 'AVAX/USD', displayName: 'Avalanche' },
+  LINKUSD: { displaySymbol: 'LINK/USD', displayName: 'Chainlink' },
+  LTCUSD: { displaySymbol: 'LTC/USD', displayName: 'Litecoin' },
+  DOTUSD: { displaySymbol: 'DOT/USD', displayName: 'Polkadot' },
+  BCHUSD: { displaySymbol: 'BCH/USD', displayName: 'Bitcoin Cash' },
+  TRXUSD: { displaySymbol: 'TRX/USD', displayName: 'TRON' },
+  XLMUSD: { displaySymbol: 'XLM/USD', displayName: 'Stellar' },
+  ATOMUSD: { displaySymbol: 'ATOM/USD', displayName: 'Cosmos' },
+  NEARUSD: { displaySymbol: 'NEAR/USD', displayName: 'NEAR Protocol' },
+};
+
 export function toNumber(value) {
   if (value == null || value === '') return null;
   const numeric = Number(value);
@@ -122,12 +141,35 @@ export function normalizeUniverse(stockRows = [], cryptoRows = []) {
   };
 }
 
+function resolveDisplayMeta(row, assetClass) {
+  const payload = row?.payload && typeof row.payload === 'object' ? row.payload : {};
+  const rawSymbol = String(row?.symbol || '—');
+  if (assetClass !== 'Crypto') {
+    return {
+      displaySymbol: rawSymbol,
+      displayName: payload.display_name || rawSymbol,
+      marketSymbol: rawSymbol,
+    };
+  }
+
+  const mapped = KRAKEN_PAIR_DISPLAY_MAP[rawSymbol] || {};
+  return {
+    displaySymbol: payload.display_symbol || mapped.displaySymbol || rawSymbol,
+    displayName: payload.display_name || mapped.displayName || rawSymbol,
+    marketSymbol: payload.kraken_pair || rawSymbol,
+  };
+}
+
 function normalizeUniverseRows(rows, assetClass) {
   return rows.map((row, index) => {
     const payload = row.payload && typeof row.payload === 'object' ? row.payload : {};
+    const display = resolveDisplayMeta(row, assetClass);
     return {
       id: row.id || `${assetClass}-${row.symbol || index}`,
-      symbol: row.symbol || '—',
+      symbol: display.displaySymbol,
+      displayName: display.displayName,
+      marketSymbol: display.marketSymbol,
+      rawSymbol: row.symbol || '—',
       assetClass,
       rank: row.rank ?? index + 1,
       lastPrice: toNumber(payload.last_price ?? payload.price ?? payload.last),
@@ -149,10 +191,15 @@ export function normalizeStrategies(stockRows = [], cryptoRows = []) {
 }
 
 function normalizeStrategyRows(rows, assetClass) {
-  return rows.map((row) => ({
-    id: row.id || `${assetClass}-${row.symbol}-${row.strategy_name}`,
-    symbol: row.symbol || '—',
-    assetClass,
+  return rows.map((row) => {
+    const display = resolveDisplayMeta(row, assetClass);
+    return {
+      id: row.id || `${assetClass}-${row.symbol}-${row.strategy_name}`,
+      symbol: display.displaySymbol,
+      displayName: display.displayName,
+      marketSymbol: display.marketSymbol,
+      rawSymbol: row.symbol || '—',
+      assetClass,
     primaryStrategy: formatSettingLabel(row.strategy_name || '—').replace(/\./g, ' '),
     secondaryStrategies: stringifyList(row.payload?.secondary_strategies),
     strategyRankScore: toNumber(row.composite_score),
@@ -167,9 +214,10 @@ function normalizeStrategyRows(rows, assetClass) {
     regimeRequirement: row.entry_policy || '—',
     nextReevaluation: row.payload?.next_reevaluation || '—',
     previousSignalAttempts: stringifyList(row.payload?.previous_signal_attempts),
-    explanation: row.decision_reason || stringifyList(row.blocked_reasons) || 'No explanation returned yet.',
-    raw: row,
-  }));
+      explanation: row.decision_reason || stringifyList(row.blocked_reasons) || 'No explanation returned yet.',
+      raw: row,
+    };
+  });
 }
 
 export function normalizePositions(stockRows = [], cryptoRows = []) {
@@ -177,10 +225,15 @@ export function normalizePositions(stockRows = [], cryptoRows = []) {
 }
 
 function normalizePositionRows(rows, assetClass) {
-  return rows.map((row) => ({
-    id: row.id || `${assetClass}-${row.symbol}-${row.timeframe}`,
-    symbol: row.symbol || '—',
-    assetClass,
+  return rows.map((row) => {
+    const display = resolveDisplayMeta(row, assetClass);
+    return {
+      id: row.id || `${assetClass}-${row.symbol}-${row.timeframe}`,
+      symbol: display.displaySymbol,
+      displayName: display.displayName,
+      marketSymbol: display.marketSymbol,
+      rawSymbol: row.symbol || '—',
+      assetClass,
     venue: row.venue || '—',
     account: row.mode || '—',
     strategy: row.payload?.strategy_name || row.source || '—',
@@ -196,24 +249,30 @@ function normalizePositionRows(rows, assetClass) {
     timeInTrade: row.payload?.time_in_trade || '—',
     status: row.reconciliation_status || row.status || '—',
     updatedAt: row.synced_at || null,
-    details: row,
-  }));
+      details: row,
+    };
+  });
 }
 
 export function normalizeLogs(events = []) {
-  return (Array.isArray(events) ? events : []).map((row) => ({
-    id: row.id,
-    timestamp: row.created_at || null,
-    level: String(row.severity || 'info').toUpperCase(),
-    component: row.event_source || 'system',
-    source: row.event_source || 'backend',
-    action: row.event_type || 'event',
-    symbol: row.payload?.symbol || '',
-    status: row.payload?.status || '',
-    message: row.message || '(no message)',
-    payload: row.payload || null,
-    raw: row,
-  }));
+  return (Array.isArray(events) ? events : []).map((row) => {
+    const rawSymbol = row.payload?.symbol || '';
+    const symbolDetail = rawSymbol ? resolveDisplayMeta({ symbol: rawSymbol, payload: row.payload }, 'Crypto') : null;
+    return {
+      id: row.id,
+      timestamp: row.created_at || null,
+      level: String(row.severity || 'info').toUpperCase(),
+      component: row.event_source || 'system',
+      source: row.event_source || 'backend',
+      action: row.event_type || 'event',
+      symbol: symbolDetail?.displaySymbol || rawSymbol,
+      marketSymbol: symbolDetail?.marketSymbol || rawSymbol,
+      status: row.payload?.status || '',
+      message: row.message || '(no message)',
+      payload: row.payload || null,
+      raw: row,
+    };
+  });
 }
 
 export function normalizeSummary({ accountSnapshots = {}, positions = [], controlSnapshot = {}, health = {}, riskRows = [] }) {

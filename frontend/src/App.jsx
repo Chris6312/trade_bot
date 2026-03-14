@@ -924,6 +924,8 @@ function StrategyDetail({ item }) {
         <StatusPill label={item.status} tone={toneFromText(item.status)} />
         <StatusPill label={item.regime} tone="neutral" />
       </div>
+      <DetailRow label="Display symbol" value={item.symbol} />
+      <DetailRow label="Venue symbol" value={item.marketSymbol || item.rawSymbol || '—'} />
       <DetailRow label="Primary strategy" value={item.primaryStrategy} />
       <DetailRow label="Secondary strategy" value={item.secondaryStrategies || '—'} />
       <DetailRow label="Readiness score" value={formatNumber(item.readinessScore)} />
@@ -944,6 +946,8 @@ function PositionDetail({ item }) {
         <StatusPill label={item.status} tone={toneFromText(item.status)} />
         <StatusPill label={item.account} tone="neutral" />
       </div>
+      <DetailRow label="Display symbol" value={item.symbol} />
+      <DetailRow label="Venue symbol" value={item.marketSymbol || item.rawSymbol || '—'} />
       <DetailRow label="Venue" value={item.venue} />
       <DetailRow label="Strategy" value={item.strategy} />
       <DetailRow label="Qty" value={formatNumber(item.qty)} />
@@ -983,6 +987,9 @@ function UniverseDetail({ item }) {
       <div className="pill-row">
         <StatusPill label={item.eligibility} tone={toneFromText(item.eligibility)} />
       </div>
+      <DetailRow label="Display symbol" value={item.symbol} />
+      <DetailRow label="Asset name" value={item.displayName || '—'} />
+      <DetailRow label="Venue symbol" value={item.marketSymbol || item.rawSymbol || '—'} />
       <DetailRow label="Rank" value={String(item.rank)} />
       <DetailRow label="Last price" value={formatMoney(item.lastPrice)} />
       <DetailRow label="Change" value={formatPct(item.changePct)} />
