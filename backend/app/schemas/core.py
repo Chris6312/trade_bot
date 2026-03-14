@@ -413,3 +413,100 @@ class StopSyncStateRead(BaseModel):
     failed_count: int
     last_status: str
     last_error: str | None
+
+
+class PositionStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    asset_class: str
+    venue: str
+    mode: str
+    source: str
+    symbol: str
+    timeframe: str
+    side: str
+    status: str
+    reconciliation_status: str
+    quantity: Decimal
+    broker_quantity: Decimal | None
+    internal_quantity: Decimal | None
+    quantity_delta: Decimal | None
+    average_entry_price: Decimal | None
+    broker_average_entry_price: Decimal | None
+    internal_average_entry_price: Decimal | None
+    cost_basis: Decimal | None
+    market_value: Decimal | None
+    current_price: Decimal | None
+    realized_pnl: Decimal
+    unrealized_pnl: Decimal
+    last_fill_at: datetime | None
+    synced_at: datetime
+    mismatch_reason: str | None
+    payload: dict[str, Any] | None
+
+
+class OpenOrderStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    execution_order_id: int | None
+    asset_class: str
+    venue: str
+    mode: str
+    source: str
+    symbol: str
+    timeframe: str
+    unique_order_key: str
+    client_order_id: str | None
+    broker_order_id: str | None
+    status: str
+    order_type: str
+    side: str
+    quantity: Decimal | None
+    notional_value: Decimal | None
+    limit_price: Decimal | None
+    stop_price: Decimal | None
+    submitted_at: datetime | None
+    synced_at: datetime
+    reconciliation_status: str
+    mismatch_reason: str | None
+    payload: dict[str, Any] | None
+
+
+class ReconciliationMismatchRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    asset_class: str
+    venue: str
+    mode: str
+    timeframe: str
+    mismatch_type: str
+    symbol: str | None
+    severity: str
+    status: str
+    internal_value: str | None
+    broker_value: str | None
+    message: str
+    detected_at: datetime
+    resolved_at: datetime | None
+    payload: dict[str, Any] | None
+
+
+class PositionSyncStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_class: str
+    venue: str
+    mode: str
+    timeframe: str
+    last_synced_at: datetime | None
+    last_fill_at: datetime | None
+    position_count: int
+    open_order_count: int
+    mismatch_count: int
+    realized_pnl: Decimal
+    unrealized_pnl: Decimal
+    last_status: str
+    last_error: str | None

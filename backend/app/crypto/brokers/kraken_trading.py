@@ -12,11 +12,20 @@ import httpx
 
 from backend.app.common.adapters.errors import AdapterAuthenticationError, AdapterParseError
 from backend.app.common.adapters.http import JsonApiClient
-from backend.app.common.adapters.models import AccountPosition, AccountState, OrderRequest, OrderResult
-from backend.app.common.adapters.utils import parse_decimal, parse_optional_decimal
+from backend.app.common.adapters.models import AccountPosition, AccountState, OpenOrder, OrderRequest, OrderResult
+from backend.app.common.adapters.utils import parse_datetime, parse_decimal, parse_optional_decimal
 from backend.app.core.config import Settings
 
 logger = logging.getLogger(__name__)
+
+
+def parse_optional_datetime(value: Any):
+    if value in (None, ""):
+        return None
+    try:
+        return parse_datetime(value, field_name="opentm")
+    except AdapterParseError:
+        return None
 
 
 class KrakenTradingAdapter:
@@ -86,6 +95,37 @@ class KrakenTradingAdapter:
             positions=tuple(positions),
             raw={"balances": balances, "trade_balance": trade_balance},
         )
+
+    def list_open_orders(self) -> tuple[OpenOrder, ...]:
+        payload = self._private_post("/private/OpenOrders")
+        result = self._extract_result(payload)
+        open_orders = result.get("open")
+        if not isinstance(open_orders, dict):
+            raise AdapterParseError("Kraken open orders payload missing open object")
+
+        orders: list[OpenOrder] = []
+        for order_id, item in open_orders.items():
+            if not isinstance(item, dict):
+                continue
+            descr = item.get("descr") if isinstance(item.get("descr"), dict) else {}
+            orders.append(
+                OpenOrder(
+                    symbol=str(descr.get("pair") or item.get("pair") or "unknown"),
+                    order_id=str(order_id),
+                    client_order_id=str(item.get("cl_ord_id")) if item.get("cl_ord_id") else None,
+                    status=str(item.get("status") or "open"),
+                    side=str(descr.get("type") or item.get("type") or "buy").lower(),
+                    order_type=str(descr.get("ordertype") or item.get("ordertype") or "market").lower(),
+                    quantity=parse_optional_decimal(item.get("vol")) or parse_optional_decimal(descr.get("volume")),
+                    notional=None,
+                    limit_price=parse_optional_decimal(descr.get("price")) or parse_optional_decimal(item.get("price")),
+                    stop_price=parse_optional_decimal(descr.get("price2")) or parse_optional_decimal(item.get("price2")),
+                    submitted_at=parse_optional_datetime(item.get("opentm")),
+                    asset_class="crypto",
+                    raw=item,
+                )
+            )
+        return tuple(orders)
 
     def place_order(self, request: OrderRequest) -> OrderResult:
         payload: dict[str, Any] = {

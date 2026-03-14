@@ -7,10 +7,19 @@ import httpx
 
 from backend.app.common.adapters.errors import AdapterAuthenticationError, AdapterParseError
 from backend.app.common.adapters.http import JsonApiClient
-from backend.app.common.adapters.models import AccountPosition, AccountState, OrderRequest, OrderResult
-from backend.app.common.adapters.utils import parse_decimal, parse_optional_decimal
+from backend.app.common.adapters.models import AccountPosition, AccountState, OpenOrder, OrderRequest, OrderResult
+from backend.app.common.adapters.utils import parse_datetime, parse_decimal, parse_optional_decimal
 
 logger = logging.getLogger(__name__)
+
+
+def parse_optional_datetime(value: Any):
+    if value in (None, ""):
+        return None
+    try:
+        return parse_datetime(value, field_name="submitted_at")
+    except AdapterParseError:
+        return None
 
 
 class AlpacaPaperTradingAdapterBase:
@@ -66,6 +75,17 @@ class AlpacaPaperTradingAdapterBase:
             raw={"account": account_payload, "positions": positions_payload},
         )
 
+
+    def list_open_orders(self) -> tuple[OpenOrder, ...]:
+        payload = self._client.request_json(
+            "GET",
+            "/v2/orders",
+            params={"status": "open", "nested": "false"},
+        )
+        if not isinstance(payload, list):
+            raise AdapterParseError("Alpaca open orders payload must be a list")
+        return tuple(self._parse_open_order(item) for item in payload)
+
     def place_order(self, request: OrderRequest) -> OrderResult:
         payload: dict[str, Any] = {
             "symbol": request.symbol,
@@ -94,6 +114,28 @@ class AlpacaPaperTradingAdapterBase:
             status=status,
             client_order_id=str(response.get("client_order_id")) if response.get("client_order_id") else request.client_order_id,
             raw=response,
+        )
+
+
+    def _parse_open_order(self, payload: dict[str, Any]) -> OpenOrder:
+        if not isinstance(payload, dict):
+            raise AdapterParseError("Alpaca open order row must be an object")
+
+        order_id = str(payload.get("id") or payload.get("client_order_id") or "unknown")
+        return OpenOrder(
+            symbol=str(payload.get("symbol") or payload.get("asset_id") or "unknown"),
+            order_id=order_id,
+            client_order_id=str(payload.get("client_order_id")) if payload.get("client_order_id") else None,
+            status=str(payload.get("status") or "open"),
+            side=str(payload.get("side") or "buy").lower(),
+            order_type=str(payload.get("type") or payload.get("order_type") or "market").lower(),
+            quantity=parse_optional_decimal(payload.get("qty")),
+            notional=parse_optional_decimal(payload.get("notional")),
+            limit_price=parse_optional_decimal(payload.get("limit_price")),
+            stop_price=parse_optional_decimal(payload.get("stop_price")),
+            submitted_at=parse_optional_datetime(payload.get("submitted_at") or payload.get("created_at")),
+            asset_class=self.asset_class,
+            raw=payload,
         )
 
     def _parse_position(self, payload: dict[str, Any]) -> AccountPosition:

@@ -587,6 +587,122 @@ class StopSyncState(TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
 
 
+
+
+class PositionState(TimestampMixin, Base):
+    __tablename__ = "position_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_class",
+            "venue",
+            "mode",
+            "symbol",
+            "timeframe",
+            name="uq_position_states_asset_venue_mode_symbol_timeframe",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    side: Mapped[str] = mapped_column(String(20), nullable=False, default="long")
+    status: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
+    reconciliation_status: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(28, 8), default=0, nullable=False)
+    broker_quantity: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    internal_quantity: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    quantity_delta: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    average_entry_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    broker_average_entry_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    internal_average_entry_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    cost_basis: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    market_value: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    current_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=0, nullable=False)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=0, nullable=False)
+    last_fill_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    mismatch_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class OpenOrderState(TimestampMixin, Base):
+    __tablename__ = "open_order_states"
+    __table_args__ = (
+        UniqueConstraint("unique_order_key", name="uq_open_order_states_unique_order_key"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_order_id: Mapped[int | None] = mapped_column(ForeignKey("execution_orders.id", ondelete="SET NULL"), index=True, nullable=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    unique_order_key: Mapped[str] = mapped_column(String(160), index=True, nullable=False)
+    client_order_id: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
+    broker_order_id: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
+    order_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    side: Mapped[str] = mapped_column(String(20), nullable=False)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    notional_value: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    limit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    reconciliation_status: Mapped[str] = mapped_column(String(30), index=True, nullable=False, default="matched")
+    mismatch_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class ReconciliationMismatch(TimestampMixin, Base):
+    __tablename__ = "reconciliation_mismatches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    mismatch_type: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
+    symbol: Mapped[str | None] = mapped_column(String(40), index=True, nullable=True)
+    severity: Mapped[str] = mapped_column(String(20), index=True, nullable=False, default="warning")
+    status: Mapped[str] = mapped_column(String(20), index=True, nullable=False, default="active")
+    internal_value: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    broker_value: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    message: Mapped[str] = mapped_column(Text(), nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class PositionSyncState(TimestampMixin, Base):
+    __tablename__ = "position_sync_states"
+    __table_args__ = (
+        UniqueConstraint("asset_class", "timeframe", name="uq_position_sync_states_asset_timeframe"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_fill_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    position_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    open_order_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    mismatch_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=0, nullable=False)
+    unrealized_pnl: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=0, nullable=False)
+    last_status: Mapped[str] = mapped_column(String(30), default="idle", nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+
+
 class Candle(TimestampMixin, Base):
     __tablename__ = "candles"
     __table_args__ = (

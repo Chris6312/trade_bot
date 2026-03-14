@@ -8,11 +8,20 @@ import httpx
 
 from backend.app.common.adapters.errors import AdapterAuthenticationError, AdapterParseError
 from backend.app.common.adapters.http import JsonApiClient
-from backend.app.common.adapters.models import AccountPosition, AccountState, OrderRequest, OrderResult
-from backend.app.common.adapters.utils import parse_decimal, parse_optional_decimal
+from backend.app.common.adapters.models import AccountPosition, AccountState, OpenOrder, OrderRequest, OrderResult
+from backend.app.common.adapters.utils import parse_datetime, parse_decimal, parse_optional_decimal
 from backend.app.core.config import Settings
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_optional_datetime(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    try:
+        return parse_datetime(value, field_name="submitted_at")
+    except AdapterParseError:
+        return None
 
 
 class PublicTradingAdapter:
@@ -63,6 +72,23 @@ class PublicTradingAdapter:
             positions=positions,
             raw=portfolio,
         )
+
+
+    def list_open_orders(self) -> tuple[OpenOrder, ...]:
+        account_id = self._resolve_account_id()
+        portfolio = self._authenticated_client().request_json(
+            "GET",
+            f"/userapigateway/trading/{account_id}/portfolio/v2",
+        )
+        orders_payload = (
+            portfolio.get("openOrders")
+            or portfolio.get("open_orders")
+            or portfolio.get("orders")
+            or []
+        )
+        if not isinstance(orders_payload, list):
+            raise AdapterParseError("Public portfolio open orders must be a list")
+        return tuple(self._parse_open_order(item) for item in orders_payload)
 
     def place_order(self, request: OrderRequest) -> OrderResult:
         account_id = self._resolve_account_id()
@@ -149,6 +175,40 @@ class PublicTradingAdapter:
             default_headers={"Authorization": f"Bearer {access_token}"},
             timeout_seconds=self._timeout_seconds,
             transport=self._transport,
+        )
+
+
+    def _parse_open_order(self, payload: dict[str, Any]) -> OpenOrder:
+        if not isinstance(payload, dict):
+            raise AdapterParseError("Public open order row must be an object")
+
+        instrument = payload.get("instrument") if isinstance(payload.get("instrument"), dict) else {}
+        order_id = str(payload.get("orderId") or payload.get("id") or payload.get("clientOrderId") or "unknown")
+        quantity = parse_optional_decimal(
+            payload.get("quantity")
+            or payload.get("qty")
+            or payload.get("shares")
+            or payload.get("units")
+        )
+        notional = parse_optional_decimal(
+            payload.get("amount")
+            or payload.get("notionalAmount")
+            or payload.get("notional")
+        )
+        return OpenOrder(
+            symbol=str(payload.get("symbol") or instrument.get("symbol") or "unknown"),
+            order_id=order_id,
+            client_order_id=str(payload.get("clientOrderId")) if payload.get("clientOrderId") else None,
+            status=str(payload.get("status") or "open"),
+            side=str(payload.get("side") or payload.get("orderSide") or "buy").lower(),
+            order_type=str(payload.get("orderType") or payload.get("type") or "market").lower(),
+            quantity=quantity,
+            notional=notional,
+            limit_price=self._extract_money_value(payload.get("limitPrice") or payload.get("limit_price")),
+            stop_price=self._extract_money_value(payload.get("stopPrice") or payload.get("stop_price")),
+            submitted_at=_parse_optional_datetime(payload.get("submittedAt") or payload.get("createdAt") or payload.get("updatedAt")),
+            asset_class="stock",
+            raw=payload,
         )
 
     def _parse_position(self, payload: dict[str, Any]) -> AccountPosition:

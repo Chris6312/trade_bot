@@ -33,6 +33,23 @@ class AccountState:
 
 
 @dataclass(slots=True, frozen=True)
+class OpenOrder:
+    symbol: str
+    order_id: str
+    client_order_id: str | None = None
+    status: str = "open"
+    side: str = "buy"
+    order_type: str = "market"
+    quantity: Decimal | None = None
+    notional: Decimal | None = None
+    limit_price: Decimal | None = None
+    stop_price: Decimal | None = None
+    submitted_at: datetime | None = None
+    asset_class: str = "unknown"
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
 class OhlcvBar:
     symbol: str
     timeframe: str

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.api.routes.account_snapshots import router as account_snapshot_router
 from backend.app.api.routes.execution import router as execution_router
 from backend.app.api.routes.health import router as health_router
+from backend.app.api.routes.positions import router as position_router
 from backend.app.api.routes.regime import router as regime_router
 from backend.app.api.routes.risk import router as risk_router
 from backend.app.api.routes.settings import router as settings_router
@@ -49,6 +50,7 @@ app.include_router(strategy_router, prefix=settings.api_v1_prefix)
 app.include_router(risk_router, prefix=settings.api_v1_prefix)
 app.include_router(execution_router, prefix=settings.api_v1_prefix)
 app.include_router(stop_router, prefix=settings.api_v1_prefix)
+app.include_router(position_router, prefix=settings.api_v1_prefix)
 
 
 @app.get("/", tags=["meta"])
