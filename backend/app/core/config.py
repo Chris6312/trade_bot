@@ -60,6 +60,21 @@ class Settings(BaseSettings):
     crypto_feature_timeframes: str = "1h"
     feature_lookback_bars: int = 20
 
+    max_account_deployment_pct: float = 0.90
+    max_risk_per_trade_pct: float = 0.02
+    default_risk_per_trade_pct: float = 0.0125
+    long_only_until_equity: float = 2500.0
+
+    stock_fee_pct: float = 0.0005
+    crypto_fee_pct: float = 0.0013
+    stock_slippage_pct: float = 0.0005
+    crypto_slippage_pct: float = 0.0015
+
+    stock_soft_stop_pct: float = -0.035
+    stock_hard_stop_pct: float = -0.055
+    crypto_soft_stop_pct: float = -0.040
+    crypto_hard_stop_pct: float = -0.065
+    total_account_hard_stop_pct: float = -0.075
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,

@@ -202,3 +202,63 @@ class StrategySyncStateRead(BaseModel):
     entry_policy: str | None
     last_status: str
     last_error: str | None
+
+
+class RiskSnapshotRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    asset_class: str
+    venue: str
+    source: str
+    symbol: str
+    strategy_name: str
+    direction: str
+    timeframe: str
+    candidate_timestamp: datetime
+    computed_at: datetime
+    status: str
+    risk_profile: str
+    decision_reason: str | None
+    blocked_reasons: list[str] | None
+    account_equity: Decimal | None
+    account_cash: Decimal | None
+    entry_price: Decimal | None
+    stop_price: Decimal | None
+    stop_distance: Decimal | None
+    stop_distance_pct: Decimal | None
+    quantity: Decimal | None
+    notional_value: Decimal | None
+    deployment_pct: Decimal | None
+    cumulative_deployment_pct: Decimal | None
+    requested_risk_pct: Decimal | None
+    effective_risk_pct: Decimal | None
+    max_risk_pct: Decimal | None
+    risk_budget_amount: Decimal | None
+    projected_loss_amount: Decimal | None
+    projected_loss_pct: Decimal | None
+    fee_pct: Decimal | None
+    slippage_pct: Decimal | None
+    estimated_fees: Decimal | None
+    estimated_slippage: Decimal | None
+    strategy_readiness_score: Decimal | None
+    strategy_composite_score: Decimal | None
+    strategy_threshold_score: Decimal | None
+    payload: dict[str, Any] | None
+
+
+class RiskSyncStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_class: str
+    venue: str
+    timeframe: str
+    last_computed_at: datetime | None
+    last_candidate_at: datetime | None
+    candidate_count: int
+    accepted_count: int
+    blocked_count: int
+    deployment_pct: Decimal
+    breaker_status: str | None
+    last_status: str
+    last_error: str | None

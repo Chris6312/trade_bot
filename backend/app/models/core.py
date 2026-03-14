@@ -330,6 +330,84 @@ class StrategySyncState(TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
 
 
+class RiskSnapshot(TimestampMixin, Base):
+    __tablename__ = "risk_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_class",
+            "symbol",
+            "strategy_name",
+            "timeframe",
+            "candidate_timestamp",
+            name="uq_risk_snapshots_asset_symbol_strategy_timeframe_timestamp",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    strategy_name: Mapped[str] = mapped_column(String(100), index=True)
+    direction: Mapped[str] = mapped_column(String(20), nullable=False, default="long")
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    candidate_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    risk_profile: Mapped[str] = mapped_column(String(30), nullable=False, default="moderate")
+    decision_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    blocked_reasons: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    account_equity: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    account_cash: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    entry_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    stop_distance: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    stop_distance_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    notional_value: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    deployment_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    cumulative_deployment_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    requested_risk_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    effective_risk_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    max_risk_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    risk_budget_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    projected_loss_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    projected_loss_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    fee_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    slippage_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    estimated_fees: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    estimated_slippage: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    strategy_readiness_score: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    strategy_composite_score: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    strategy_threshold_score: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class RiskSyncState(TimestampMixin, Base):
+    __tablename__ = "risk_sync_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_class",
+            "timeframe",
+            name="uq_risk_sync_states_asset_timeframe",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    last_computed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_candidate_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    candidate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    accepted_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    blocked_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    deployment_pct: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=0, nullable=False)
+    breaker_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    last_status: Mapped[str] = mapped_column(String(20), default="idle", nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+
+
 class Candle(TimestampMixin, Base):
     __tablename__ = "candles"
     __table_args__ = (
