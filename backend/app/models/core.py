@@ -408,6 +408,96 @@ class RiskSyncState(TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
 
 
+
+
+class ExecutionOrder(TimestampMixin, Base):
+    __tablename__ = "execution_orders"
+    __table_args__ = (
+        UniqueConstraint("risk_snapshot_id", name="uq_execution_orders_risk_snapshot_id"),
+        UniqueConstraint("client_order_id", name="uq_execution_orders_client_order_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    risk_snapshot_id: Mapped[int] = mapped_column(ForeignKey("risk_snapshots.id", ondelete="CASCADE"), index=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    strategy_name: Mapped[str] = mapped_column(String(100), index=True)
+    direction: Mapped[str] = mapped_column(String(20), nullable=False, default="long")
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    candidate_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    routed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    client_order_id: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
+    broker_order_id: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
+    order_type: Mapped[str] = mapped_column(String(20), nullable=False, default="market")
+    side: Mapped[str] = mapped_column(String(20), nullable=False, default="buy")
+    quantity: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    notional_value: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    limit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    fill_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    decision_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class ExecutionFill(TimestampMixin, Base):
+    __tablename__ = "execution_fills"
+    __table_args__ = (
+        UniqueConstraint(
+            "execution_order_id",
+            "fill_timestamp",
+            "quantity",
+            name="uq_execution_fills_order_timestamp_quantity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    execution_order_id: Mapped[int] = mapped_column(ForeignKey("execution_orders.id", ondelete="CASCADE"), index=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    fill_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), index=True, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(28, 8), nullable=False)
+    fill_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    notional_value: Mapped[Decimal] = mapped_column(Numeric(28, 8), nullable=False)
+    fee_amount: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    venue_fill_id: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class ExecutionSyncState(TimestampMixin, Base):
+    __tablename__ = "execution_sync_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_class",
+            "timeframe",
+            name="uq_execution_sync_states_asset_timeframe",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    mode: Mapped[str] = mapped_column(String(20), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    last_routed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_candidate_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    candidate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    routed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    blocked_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    fill_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_status: Mapped[str] = mapped_column(String(30), default="idle", nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+
 class Candle(TimestampMixin, Base):
     __tablename__ = "candles"
     __table_args__ = (

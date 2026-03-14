@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     default_risk_per_trade_pct: float = 0.0125
     long_only_until_equity: float = 2500.0
 
+    default_mode: str = "mixed"
+    stock_execution_mode: str = "paper"
+    crypto_execution_mode: str = "paper"
+    execution_order_type: str = "market"
+    execution_time_in_force: str = "day"
+    execution_kill_switch_enabled: bool = False
+
     stock_fee_pct: float = 0.0005
     crypto_fee_pct: float = 0.0013
     stock_slippage_pct: float = 0.0005

@@ -262,3 +262,72 @@ class RiskSyncStateRead(BaseModel):
     breaker_status: str | None
     last_status: str
     last_error: str | None
+
+
+class ExecutionOrderRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    risk_snapshot_id: int
+    asset_class: str
+    venue: str
+    mode: str
+    source: str
+    symbol: str
+    strategy_name: str
+    direction: str
+    timeframe: str
+    candidate_timestamp: datetime
+    routed_at: datetime
+    client_order_id: str
+    broker_order_id: str | None
+    status: str
+    order_type: str
+    side: str
+    quantity: Decimal | None
+    notional_value: Decimal | None
+    limit_price: Decimal | None
+    stop_price: Decimal | None
+    fill_count: int
+    decision_reason: str | None
+    error_message: str | None
+    payload: dict[str, Any] | None
+
+
+class ExecutionFillRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    execution_order_id: int
+    asset_class: str
+    venue: str
+    mode: str
+    symbol: str
+    timeframe: str
+    fill_timestamp: datetime
+    status: str
+    quantity: Decimal
+    fill_price: Decimal
+    notional_value: Decimal
+    fee_amount: Decimal | None
+    venue_fill_id: str | None
+    payload: dict[str, Any] | None
+
+
+class ExecutionSyncStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_class: str
+    venue: str
+    mode: str
+    timeframe: str
+    last_routed_at: datetime | None
+    last_candidate_at: datetime | None
+    candidate_count: int
+    routed_count: int
+    duplicate_count: int
+    blocked_count: int
+    failed_count: int
+    fill_count: int
+    last_status: str
+    last_error: str | None
