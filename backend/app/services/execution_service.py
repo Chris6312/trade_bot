@@ -14,7 +14,7 @@ from backend.app.core.config import Settings, get_settings
 from backend.app.models.core import ExecutionFill, ExecutionOrder, ExecutionSyncState, RiskSnapshot
 from backend.app.services.adapter_registry import AdapterRegistry
 from backend.app.services.risk_service import VALID_ASSET_CLASSES, list_current_risk_snapshots
-from backend.app.services.settings_service import get_setting
+from backend.app.services.settings_service import get_setting, resolve_bool_setting, resolve_str_setting
 
 SINGLE_EXECUTION_WRITER = "execution_worker"
 EXECUTION_SOURCE = "execution_engine"
@@ -202,6 +202,44 @@ def rebuild_execution_for_asset_class(
     last_error: str | None = None
     last_status = "completed"
     resolver = adapter_resolver or RegistryAdapterResolver(AdapterRegistry(runtime_settings))
+
+    if not _asset_trading_enabled(db, asset_class=asset_class):
+        blocked_count = len(accepted_rows)
+        last_status = f"{asset_class}_trading_disabled"
+        _upsert_execution_sync_state(
+            db,
+            asset_class=asset_class,
+            venue=route_target.venue,
+            mode=route_target.mode,
+            timeframe=timeframe,
+            last_routed_at=target_time,
+            last_candidate_at=last_candidate_at,
+            candidate_count=len(accepted_rows),
+            routed_count=0,
+            duplicate_count=0,
+            blocked_count=blocked_count,
+            failed_count=0,
+            fill_count=0,
+            last_status=last_status,
+            last_error=None,
+        )
+        db.commit()
+        return ExecutionPersistenceSummary(
+            asset_class=asset_class,
+            timeframe=timeframe,
+            candidate_count=len(accepted_rows),
+            routed_count=0,
+            duplicate_count=0,
+            blocked_count=blocked_count,
+            failed_count=0,
+            fill_count=0,
+            last_candidate_at=last_candidate_at,
+            last_routed_at=target_time,
+            venue=route_target.venue,
+            mode=route_target.mode,
+            last_status=last_status,
+            last_error=None,
+        )
 
     if _kill_switch_enabled(db, settings=runtime_settings):
         blocked_count = len(accepted_rows)
@@ -450,28 +488,22 @@ def _resolve_route_target(*, asset_class: str, mode: str) -> RouteTarget:
 
 
 def _resolve_execution_mode(db: Session, *, asset_class: str, settings: Settings) -> str:
-    default_mode = _resolve_str_setting(db, "execution.default_mode", default=settings.default_mode).lower()
+    default_mode = resolve_str_setting(db, "execution.default_mode", default=settings.default_mode).lower()
     if default_mode in {"paper", "live"}:
         return default_mode
     if default_mode == "mixed":
         per_asset_default = settings.stock_execution_mode if asset_class == "stock" else settings.crypto_execution_mode
-        asset_mode = _resolve_str_setting(db, f"execution.{asset_class}.mode", default=per_asset_default).lower()
+        asset_mode = resolve_str_setting(db, f"execution.{asset_class}.mode", default=per_asset_default).lower()
         return asset_mode if asset_mode in {"paper", "live"} else "paper"
     return "paper"
 
 
 def _kill_switch_enabled(db: Session, *, settings: Settings) -> bool:
-    record = get_setting(db, key="controls.kill_switch_enabled")
-    if record is None:
-        return bool(settings.execution_kill_switch_enabled)
-    return str(record.value).strip().lower() in {"1", "true", "yes", "on"}
+    return resolve_bool_setting(db, "controls.kill_switch_enabled", default=settings.execution_kill_switch_enabled)
 
 
-def _resolve_str_setting(db: Session, key: str, *, default: str) -> str:
-    record = get_setting(db, key=key)
-    if record is None or record.value is None or record.value == "":
-        return default
-    return str(record.value)
+def _asset_trading_enabled(db: Session, *, asset_class: str) -> bool:
+    return resolve_bool_setting(db, f"controls.{asset_class}.trading_enabled", default=True)
 
 
 def _upsert_execution_sync_state(

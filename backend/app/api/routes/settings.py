@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from backend.app.api.deps import get_db
 from backend.app.core.config import get_settings
 from backend.app.models.core import Setting
-from backend.app.schemas.core import RuntimeSettingsSnapshot, SettingRead, SettingUpsert
+from backend.app.schemas.core import RuntimeSettingsSnapshot, SettingBatchUpsertRequest, SettingRead, SettingUpsert
 from backend.app.services.settings_service import build_runtime_snapshot, get_setting, upsert_setting
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -24,6 +24,22 @@ def get_runtime_snapshot(db: Session = Depends(get_db)) -> RuntimeSettingsSnapsh
     settings = get_settings()
     snapshot = build_runtime_snapshot(db, settings)
     return RuntimeSettingsSnapshot(**snapshot)
+
+
+@router.post("/batch", response_model=list[SettingRead])
+def put_settings_batch(payload: SettingBatchUpsertRequest, db: Session = Depends(get_db)) -> list[SettingRead]:
+    rows: list[SettingRead] = []
+    for item in payload.items:
+        record = upsert_setting(
+            db,
+            key=item.key,
+            value=item.value,
+            value_type=item.value_type,
+            description=item.description,
+            is_secret=item.is_secret,
+        )
+        rows.append(SettingRead.model_validate(record))
+    return rows
 
 
 @router.get("/{key}", response_model=SettingRead)

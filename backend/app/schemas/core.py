@@ -14,6 +14,14 @@ class SettingUpsert(BaseModel):
     is_secret: bool = False
 
 
+class SettingBatchUpsertItem(SettingUpsert):
+    key: str
+
+
+class SettingBatchUpsertRequest(BaseModel):
+    items: list[SettingBatchUpsertItem] = Field(default_factory=list)
+
+
 class SettingRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

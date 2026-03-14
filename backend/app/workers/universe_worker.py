@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.core.config import Settings, get_settings
 from backend.app.services.adapter_registry import AdapterRegistry
+from backend.app.services.settings_service import resolve_bool_setting, resolve_int_setting, resolve_str_setting
 from backend.app.services.ai_universe_service import AIUniverseService
 from backend.app.services.universe_service import (
     UniverseSymbolRecord,
@@ -65,7 +66,7 @@ class UniverseWorker:
         trade_date = trading_date_for_now(resolved_at)
         current_run = get_universe_run(self.db, asset_class="stock", trade_date=trade_date)
 
-        if self.settings.ai_run_once_daily and not force:
+        if self._ai_run_once_daily() and not force:
             cached = self._load_cached_stock_universe(run=current_run, trade_date=trade_date)
             if cached is not None:
                 return cached
@@ -87,15 +88,15 @@ class UniverseWorker:
             raise RuntimeError("fallback_source_returned_no_candidates")
 
         ai_error: str | None = None
-        ai_source_requested = self.settings.stock_universe_source.lower() == "ai"
-        if ai_source_requested and self.settings.ai_enabled:
+        ai_source_requested = self._stock_universe_source() == "ai"
+        if ai_source_requested and self._ai_enabled():
             try:
                 ranked = self.ai_service.rank_candidates(fallback_candidates)
                 ranked_candidates = self._merge_ai_rankings(fallback_candidates, ranked)
                 selected = normalize_stock_candidates(
                     candidates=ranked_candidates,
                     asset_metadata=asset_metadata,
-                    max_size=self.settings.stock_universe_max_size,
+                    max_size=self._stock_universe_max_size(),
                     source="ai",
                     venue="alpaca",
                 )
@@ -128,7 +129,7 @@ class UniverseWorker:
         fallback_symbols = normalize_stock_candidates(
             candidates=fallback_candidates,
             asset_metadata=asset_metadata,
-            max_size=self.settings.stock_universe_max_size,
+            max_size=self._stock_universe_max_size(),
             source="fallback",
             venue="alpaca",
         )
@@ -213,6 +214,20 @@ class UniverseWorker:
             raise RuntimeError("stock_universe_unresolved")
         return tuple(item.symbol for item in list_universe_symbols(self.db, asset_class="stock", trade_date=trade_date))
 
+
+    def _stock_universe_source(self) -> str:
+        value = resolve_str_setting(self.db, "stock_universe_source", default=self.settings.stock_universe_source).lower()
+        return value if value in {"ai", "fallback"} else self.settings.stock_universe_source.lower()
+
+    def _stock_universe_max_size(self) -> int:
+        return max(1, resolve_int_setting(self.db, "stock_universe_max_size", default=self.settings.stock_universe_max_size))
+
+    def _ai_enabled(self) -> bool:
+        return resolve_bool_setting(self.db, "ai_enabled", default=self.settings.ai_enabled)
+
+    def _ai_run_once_daily(self) -> bool:
+        return resolve_bool_setting(self.db, "ai_run_once_daily", default=self.settings.ai_run_once_daily)
+
     def _load_cached_stock_universe(
         self,
         *,
@@ -268,7 +283,7 @@ class UniverseWorker:
 
     def _fetch_fallback_candidates(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
         adapter = self.registry.alpaca_stock_screener()
-        rows = adapter.fetch_most_active(top=max(self.settings.stock_universe_max_size * 2, 50), by="volume")
+        rows = adapter.fetch_most_active(top=max(self._stock_universe_max_size() * 2, 50), by="volume")
         metadata: dict[str, dict[str, Any]] = {}
         for row in rows:
             symbol = str(row.get("symbol") or "").upper()

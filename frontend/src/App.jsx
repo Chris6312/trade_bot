@@ -15,50 +15,88 @@ const topUtilityPages = [{ key: 'data', label: 'Data' }]
 const refreshOptions = [0, 10, 20, 30, 60]
 const settingsCatalog = [
   {
-    category: 'Broker / Account',
+    category: 'App / Broker Modes',
     fields: [
-      field('execution.default_mode', 'Default execution mode', 'string', 'mixed'),
-      field('execution.stock.mode', 'Stock mode', 'string', 'paper'),
-      field('execution.crypto.mode', 'Crypto mode', 'string', 'paper'),
-      field('controls.kill_switch_enabled', 'Kill switch enabled', 'bool', 'false', true),
-      field('controls.stock.trading_enabled', 'Stocks trading enabled', 'bool', 'true', true),
-      field('controls.crypto.trading_enabled', 'Crypto trading enabled', 'bool', 'true', true),
+      field('execution.default_mode', 'Default execution mode', 'string', 'mixed', { options: ['mixed', 'paper', 'live'] }),
+      field('execution.stock.mode', 'Stock route mode', 'string', 'paper', { options: ['paper', 'live'] }),
+      field('execution.crypto.mode', 'Crypto route mode', 'string', 'paper', { options: ['paper', 'live'] }),
+      field('controls.stock.trading_enabled', 'Stocks trading enabled', 'bool', 'true', { dangerous: true }),
+      field('controls.crypto.trading_enabled', 'Crypto trading enabled', 'bool', 'true', { dangerous: true }),
     ],
   },
   {
-    category: 'Risk Controls',
+    category: 'Universe Settings',
     fields: [
-      field('max_account_deployment_pct', 'Max deployment pct', 'float', '0.90'),
-      field('max_risk_per_trade_pct', 'Max risk pct', 'float', '0.02'),
-      field('default_risk_per_trade_pct', 'Default risk pct', 'float', '0.0125'),
-      field('long_only_until_equity', 'Long-only until equity', 'float', '2500'),
-      field('stock_soft_stop_pct', 'Stock soft stop pct', 'float', '-0.035'),
-      field('stock_hard_stop_pct', 'Stock hard stop pct', 'float', '-0.055'),
-      field('crypto_soft_stop_pct', 'Crypto soft stop pct', 'float', '-0.040'),
-      field('crypto_hard_stop_pct', 'Crypto hard stop pct', 'float', '-0.065'),
-      field('total_account_hard_stop_pct', 'Total account hard stop pct', 'float', '-0.075'),
-    ],
-  },
-  {
-    category: 'Universe Controls',
-    fields: [
-      field('stock_universe_source', 'Stock universe source', 'string', 'ai'),
+      field('stock_universe_source', 'Stock universe source', 'string', 'ai', { options: ['ai', 'fallback'] }),
       field('stock_universe_max_size', 'Stock universe max size', 'int', '50'),
+      field('ai_enabled', 'AI ranking enabled', 'bool', 'true'),
+      field('ai_run_once_daily', 'AI run once daily', 'bool', 'true'),
     ],
   },
   {
-    category: 'Stop Management',
+    category: 'Risk Settings',
     fields: [
-      field('stop_stock_style', 'Stock stop style', 'string', 'fixed'),
-      field('stop_crypto_style', 'Crypto stop style', 'string', 'trailing'),
-      field('stop_stock_fallback_pct', 'Stock fallback stop pct', 'float', '0.01'),
-      field('stop_crypto_fallback_pct', 'Crypto fallback stop pct', 'float', '0.015'),
+      field('risk.default_profile', 'Risk profile', 'string', 'moderate', { options: ['moderate'] }),
+      field('risk.max_account_deployment_pct', 'Max account deployment pct', 'float', '0.90'),
+      field('risk.max_per_trade_pct', 'Max risk per trade pct', 'float', '0.02'),
+      field('risk.default_per_trade_pct', 'Default risk per trade pct', 'float', '0.0125'),
+      field('risk.long_only_until_equity', 'Long-only until equity', 'float', '2500'),
+      field('risk.stock.fee_pct', 'Stock fee pct', 'float', '0.0005'),
+      field('risk.crypto.fee_pct', 'Crypto fee pct', 'float', '0.0013'),
+      field('risk.stock.slippage_pct', 'Stock slippage pct', 'float', '0.0005'),
+      field('risk.crypto.slippage_pct', 'Crypto slippage pct', 'float', '0.0015'),
+    ],
+  },
+  {
+    category: 'Circuit Breakers',
+    fields: [
+      field('risk.stock.soft_stop_pct', 'Stock soft stop pct', 'float', '-0.035', { dangerous: true }),
+      field('risk.stock.hard_stop_pct', 'Stock hard stop pct', 'float', '-0.055', { dangerous: true }),
+      field('risk.crypto.soft_stop_pct', 'Crypto soft stop pct', 'float', '-0.040', { dangerous: true }),
+      field('risk.crypto.hard_stop_pct', 'Crypto hard stop pct', 'float', '-0.065', { dangerous: true }),
+      field('risk.total_account.hard_stop_pct', 'Total account hard stop pct', 'float', '-0.075', { dangerous: true }),
+    ],
+  },
+  {
+    category: 'Stop Settings',
+    fields: [
+      field('stops.stock.style', 'Stock stop style', 'string', 'fixed', { options: ['fixed', 'trailing', 'step'] }),
+      field('stops.crypto.style', 'Crypto stop style', 'string', 'trailing', { options: ['fixed', 'trailing', 'step'] }),
+      field('stops.stock.fallback_stop_pct', 'Stock fallback stop pct', 'float', '0.01'),
+      field('stops.crypto.fallback_stop_pct', 'Crypto fallback stop pct', 'float', '0.015'),
+      field('stops.stock.trailing_activation_pct', 'Stock trailing activation pct', 'float', '0.01'),
+      field('stops.stock.trailing_offset_pct', 'Stock trailing offset pct', 'float', '0.0075'),
+      field('stops.crypto.trailing_activation_pct', 'Crypto trailing activation pct', 'float', '0.015'),
+      field('stops.crypto.trailing_offset_pct', 'Crypto trailing offset pct', 'float', '0.01'),
+      field('stops.stock.step_trigger_pct', 'Stock step trigger pct', 'float', '0.02'),
+      field('stops.stock.step_increment_pct', 'Stock step increment pct', 'float', '0.01'),
+      field('stops.crypto.step_trigger_pct', 'Crypto step trigger pct', 'float', '0.025'),
+      field('stops.crypto.step_increment_pct', 'Crypto step increment pct', 'float', '0.0125'),
+    ],
+  },
+  {
+    category: 'Strategy Toggles',
+    fields: [
+      field('strategy_enabled.stock.trend_pullback_long', 'Stock · Trend Pullback Long', 'bool', 'true'),
+      field('strategy_enabled.stock.vwap_reclaim_long', 'Stock · VWAP Reclaim Long', 'bool', 'true'),
+      field('strategy_enabled.stock.opening_range_breakout_long', 'Stock · Opening Range Breakout Long', 'bool', 'true'),
+      field('strategy_enabled.crypto.trend_continuation_long', 'Crypto · Trend Continuation Long', 'bool', 'true'),
+      field('strategy_enabled.crypto.vwap_reclaim_long', 'Crypto · VWAP Reclaim Long', 'bool', 'true'),
+      field('strategy_enabled.crypto.breakout_long', 'Crypto · Breakout Long', 'bool', 'true'),
+      field('strategy_enabled.crypto.bbrsi_mean_reversion_long', 'Crypto · BBRSI Mean Reversion Long', 'bool', 'true'),
     ],
   },
 ]
 
-function field(key, label, valueType, defaultValue, dangerous = false) {
-  return { key, label, valueType, defaultValue, dangerous }
+function field(key, label, valueType, defaultValue, options = {}) {
+  return {
+    key,
+    label,
+    valueType,
+    defaultValue,
+    dangerous: Boolean(options.dangerous),
+    options: options.options ?? null,
+  }
 }
 
 function App() {
@@ -85,7 +123,7 @@ function App() {
   async function runAction(label, path, body = {}) {
     setActionState({ status: 'busy', message: `${label} in flight…` })
     try {
-      const payload = await requestJson(`${apiPrefix}${path}`, {
+      const payload = await requestJson(`${apiBaseUrl}${apiPrefix}${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -107,18 +145,19 @@ function App() {
     setSettingsSaveBusy(true)
     setActionState({ status: 'busy', message: 'Saving staged settings…' })
     try {
-      for (const [key, item] of changedEntries) {
-        await requestJson(`${apiPrefix}/settings/${encodeURIComponent(key)}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+      await requestJson(`${apiBaseUrl}${apiPrefix}/settings/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: changedEntries.map(([key, item]) => ({
+            key,
             value: item.value,
             value_type: item.valueType,
             description: item.description,
             is_secret: false,
-          }),
-        })
-      }
+          })),
+        }),
+      })
       setDraftSettings({})
       setActionState({ status: 'success', message: `Saved ${changedEntries.length} setting changes.` })
       await refresh({ silent: false })
@@ -550,7 +589,7 @@ function TopBar({
   return (
     <header className="topbar">
       <div>
-        <p className="kicker">Phase 13 cockpit</p>
+        <p className="kicker">Phase 14 settings deck</p>
         <h2>{humanizePage(currentPage)}</h2>
       </div>
 
@@ -1105,7 +1144,13 @@ function SettingsPage({
                       <p>{item.key}</p>
                     </div>
                     <div className="settings-editors">
-                      {item.valueType === 'bool' ? (
+                      {item.options ? (
+                        <select value={item.currentValue} onChange={(event) => updateDraft(item, event.target.value)}>
+                          {item.options.map((option) => (
+                            <option key={option} value={option}>{option}</option>
+                          ))}
+                        </select>
+                      ) : item.valueType === 'bool' ? (
                         <select value={item.currentValue} onChange={(event) => updateDraft(item, event.target.value)}>
                           <option value="true">true</option>
                           <option value="false">false</option>

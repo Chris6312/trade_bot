@@ -64,6 +64,41 @@ def resolve_runtime_value(
         return default, "environment"
 
 
+
+
+def resolve_str_setting(db: Session, key: str, *, default: str) -> str:
+    record = get_setting(db, key=key)
+    if record is None or record.value in {None, ""}:
+        return str(default)
+    return str(record.value)
+
+
+def resolve_bool_setting(db: Session, key: str, *, default: bool) -> bool:
+    record = get_setting(db, key=key)
+    if record is None or record.value in {None, ""}:
+        return bool(default)
+    return str(record.value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def resolve_int_setting(db: Session, key: str, *, default: int) -> int:
+    record = get_setting(db, key=key)
+    if record is None or record.value in {None, ""}:
+        return int(default)
+    try:
+        return int(record.value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def resolve_float_setting(db: Session, key: str, *, default: float) -> float:
+    record = get_setting(db, key=key)
+    if record is None or record.value in {None, ""}:
+        return float(default)
+    try:
+        return float(record.value)
+    except (TypeError, ValueError):
+        return float(default)
+
 def build_runtime_snapshot(db: Session, env_settings: Settings) -> dict[str, object]:
     app_name, app_name_source = resolve_runtime_value(
         db,
