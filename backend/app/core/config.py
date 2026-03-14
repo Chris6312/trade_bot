@@ -56,6 +56,10 @@ class Settings(BaseSettings):
 
     stock_default_backfill_bars: int = 500
     crypto_default_backfill_bars: int = 720
+    stock_feature_timeframes: str = "1h"
+    crypto_feature_timeframes: str = "1h"
+    feature_lookback_bars: int = 20
+
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
@@ -103,6 +107,14 @@ class Settings(BaseSettings):
             )
 
         return self.database_url
+
+    @property
+    def stock_feature_timeframe_list(self) -> list[str]:
+        return [item.strip() for item in self.stock_feature_timeframes.split(",") if item.strip()]
+
+    @property
+    def crypto_feature_timeframe_list(self) -> list[str]:
+        return [item.strip() for item in self.crypto_feature_timeframes.split(",") if item.strip()]
 
 
 @lru_cache(maxsize=1)

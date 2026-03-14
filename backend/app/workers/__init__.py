@@ -1,4 +1,5 @@
 from backend.app.workers.candle_worker import SingleCandleWorker
+from backend.app.workers.feature_worker import FeatureWorker
 from backend.app.workers.universe_worker import UniverseWorker
 
-__all__ = ["SingleCandleWorker", "UniverseWorker"]
+__all__ = ["SingleCandleWorker", "UniverseWorker", "FeatureWorker"]

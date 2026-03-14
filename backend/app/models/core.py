@@ -156,6 +156,65 @@ class UniverseConstituent(TimestampMixin, Base):
     universe_run: Mapped[UniverseRun] = relationship(back_populates="constituents")
 
 
+class FeatureSnapshot(TimestampMixin, Base):
+    __tablename__ = "feature_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_class",
+            "symbol",
+            "timeframe",
+            "candle_timestamp",
+            name="uq_feature_snapshots_asset_symbol_timeframe_timestamp",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    candle_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
+    close: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    volume: Mapped[Decimal] = mapped_column(Numeric(28, 8), nullable=False)
+    price_return_1: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    sma_20: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    ema_20: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    momentum_20: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    volume_sma_20: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    relative_volume_20: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    dollar_volume: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    dollar_volume_sma_20: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
+    atr_14: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    realized_volatility_20: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    trend_slope_20: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class FeatureSyncState(TimestampMixin, Base):
+    __tablename__ = "feature_sync_states"
+    __table_args__ = (
+        UniqueConstraint(
+            "asset_class",
+            "symbol",
+            "timeframe",
+            name="uq_feature_sync_states_asset_symbol_timeframe",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_class: Mapped[str] = mapped_column(String(20), index=True)
+    venue: Mapped[str] = mapped_column(String(50), index=True)
+    symbol: Mapped[str] = mapped_column(String(40), index=True)
+    timeframe: Mapped[str] = mapped_column(String(10), index=True)
+    last_computed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_candle_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    feature_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_status: Mapped[str] = mapped_column(String(20), default="idle", nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+
+
 class Candle(TimestampMixin, Base):
     __tablename__ = "candles"
     __table_args__ = (
