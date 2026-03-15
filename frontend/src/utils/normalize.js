@@ -68,14 +68,6 @@ const DEFAULT_SETTINGS_CATALOG = [
 
 const SETTINGS_CATALOG_BY_KEY = new Map(DEFAULT_SETTINGS_CATALOG.map((item, index) => [item.key, { ...item, order: index }]));
 
-const TIMEFRAME_SECONDS = {
-  '5m': 5 * 60,
-  '15m': 15 * 60,
-  '1h': 60 * 60,
-  '4h': 4 * 60 * 60,
-  '1d': 24 * 60 * 60,
-};
-
 export function toNumber(value) {
   if (value == null || value === '') return null;
   const numeric = Number(value);
@@ -86,6 +78,95 @@ export function toPercent(value) {
   const numeric = toNumber(value);
   if (numeric == null) return null;
   return Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
+}
+
+const TIMEFRAME_MINUTES = {
+  '5m': 5,
+  '15m': 15,
+  '1h': 60,
+  '4h': 240,
+  '1d': 1440,
+};
+
+function toDate(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function addMinutes(date, minutes) {
+  return new Date(date.getTime() + (minutes * 60 * 1000));
+}
+
+function startOfNextTimeframeBoundary(date, timeframe) {
+  const current = new Date(date.getTime());
+  const next = new Date(current.getTime());
+  next.setUTCSeconds(0, 0);
+
+  if (timeframe === '1d') {
+    next.setUTCHours(0, 0, 0, 0);
+    next.setUTCDate(next.getUTCDate() + 1);
+    return next;
+  }
+
+  if (timeframe === '4h') {
+    next.setUTCMinutes(0, 0, 0);
+    const nextHour = Math.floor(next.getUTCHours() / 4) * 4 + 4;
+    if (nextHour >= 24) {
+      next.setUTCDate(next.getUTCDate() + 1);
+      next.setUTCHours(0, 0, 0, 0);
+      return next;
+    }
+    next.setUTCHours(nextHour, 0, 0, 0);
+    return next;
+  }
+
+  if (timeframe === '1h') {
+    next.setUTCMinutes(0, 0, 0);
+    next.setUTCHours(next.getUTCHours() + 1);
+    return next;
+  }
+
+  const minutes = TIMEFRAME_MINUTES[timeframe];
+  if (minutes) {
+    const currentMinute = next.getUTCMinutes();
+    const nextBucketMinute = Math.floor(currentMinute / minutes) * minutes + minutes;
+    next.setUTCMinutes(0, 0, 0);
+    if (nextBucketMinute >= 60) {
+      next.setUTCHours(next.getUTCHours() + 1);
+      next.setUTCMinutes(nextBucketMinute - 60, 0, 0);
+      return next;
+    }
+    next.setUTCMinutes(nextBucketMinute, 0, 0);
+    return next;
+  }
+
+  return addMinutes(next, 15);
+}
+
+function computeNextReevaluation(timeframe, candidateTimestamp, evaluatedAt, backendValue) {
+  const anchor = toDate(candidateTimestamp) || toDate(evaluatedAt);
+  const backendDate = toDate(backendValue);
+  if (!anchor) return backendDate?.toISOString() || backendValue || null;
+
+  const nextBoundary = startOfNextTimeframeBoundary(anchor, timeframe || '15m');
+  nextBoundary.setUTCSeconds(20, 0);
+
+  if (!backendDate) return nextBoundary.toISOString();
+  if (Math.abs(backendDate.getTime() - nextBoundary.getTime()) <= 1000) return backendDate.toISOString();
+  return nextBoundary.toISOString();
+}
+
+function buildStrategyStatusDetail(status, blocker, thresholdsFailed) {
+  const compact = String(blocker || thresholdsFailed || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(', ');
+  if (status === 'Ready') return 'Watching next trigger';
+  if (compact) return compact;
+  return 'Awaiting next evaluation';
 }
 
 export function normalizeBoolean(value) {
@@ -238,11 +319,10 @@ export function normalizeSettings(settings = [], runtimeSnapshot = null, control
     .sort((left, right) => (left.order - right.order) || left.label.localeCompare(right.label));
 }
 
-export function normalizeUniverse(stockRows = [], cryptoRows = [], strategies = []) {
-  const strategyMap = buildStrategyReadinessMap(strategies);
+export function normalizeUniverse(stockRows = [], cryptoRows = []) {
   return {
-    stocks: normalizeUniverseRows(stockRows, 'Stock', strategyMap),
-    crypto: normalizeUniverseRows(cryptoRows, 'Crypto', strategyMap),
+    stocks: normalizeUniverseRows(stockRows, 'Stock'),
+    crypto: normalizeUniverseRows(cryptoRows, 'Crypto'),
   };
 }
 
@@ -265,86 +345,16 @@ function resolveDisplayMeta(row, assetClass) {
   };
 }
 
-function buildStrategyReadinessMap(strategies = []) {
-  return (Array.isArray(strategies) ? strategies : []).reduce((acc, row) => {
-    const assetClass = String(row.assetClass || '').trim();
-    const keys = [row.rawSymbol, row.marketSymbol, row.symbol]
-      .filter(Boolean)
-      .map((symbol) => `${assetClass}|${String(symbol).toUpperCase()}`);
-
-    for (const key of new Set(keys)) {
-      acc[key] = [...(acc[key] || []), row];
-    }
-    return acc;
-  }, {});
-}
-
-function deriveUniverseStrategyState(strategyRows = [], fallbackEligibility = 'Selected', fallbackBlockReason = '') {
-  if (!strategyRows.length) return { eligibility: fallbackEligibility, blockReason: fallbackBlockReason };
-
-  const readyRows = strategyRows.filter((row) => String(row.status || '').toLowerCase() === 'ready');
-  if (readyRows.length) return { eligibility: 'Eligible', blockReason: '' };
-
-  const blockers = strategyRows
-    .flatMap((row) => String(row.blocker || '')
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean));
-
-  const uniqueBlockers = [...new Set(blockers)];
-  const hasOnlyDataGaps = uniqueBlockers.length > 0 && uniqueBlockers.every((reason) => /missing_feature_snapshot|insufficient_candles|vwap_missing|data_stale|feature_stale/i.test(reason));
-  const hasHistoryGap = uniqueBlockers.some((reason) => /not_enough_history|insufficient_candles/i.test(reason));
-  const hasDisabled = uniqueBlockers.some((reason) => /strategy_disabled/i.test(reason));
-
-  if (hasDisabled) {
-    return { eligibility: 'Disabled', blockReason: uniqueBlockers.join(', ') || fallbackBlockReason };
-  }
-  if (hasHistoryGap) {
-    return { eligibility: 'Not Enough History', blockReason: uniqueBlockers.join(', ') || fallbackBlockReason };
-  }
-  if (hasOnlyDataGaps) {
-    return { eligibility: 'Data Stale', blockReason: uniqueBlockers.join(', ') || fallbackBlockReason };
-  }
-
-  return {
-    eligibility: 'Blocked',
-    blockReason: uniqueBlockers.join(', ') || fallbackBlockReason || strategyRows[0]?.explanation || '',
-  };
-}
-
-function safeDate(value) {
-  if (!value) return null;
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
-
-function deriveNextReevaluation(explicitValue, evaluatedAt, timeframe) {
-  if (explicitValue) return explicitValue;
-
-  const base = safeDate(evaluatedAt);
-  const timeframeSeconds = TIMEFRAME_SECONDS[String(timeframe || '').toLowerCase()];
-  if (!base || !timeframeSeconds) return '—';
-
-  const epochSeconds = Math.floor(base.getTime() / 1000);
-  const nextBoundarySeconds = (Math.floor(epochSeconds / timeframeSeconds) + 1) * timeframeSeconds + 20;
-  return new Date(nextBoundarySeconds * 1000).toISOString();
-}
-
-function normalizeUniverseRows(rows, assetClass, strategyMap = {}) {
+function normalizeUniverseRows(rows, assetClass) {
   return rows
     .map((row, index) => {
       const payload = row.payload && typeof row.payload === 'object' ? row.payload : {};
       const display = resolveDisplayMeta(row, assetClass);
       const blockedReasons = stringifyList(payload.blocked_reasons);
       const selectionReason = row.selection_reason || payload.selection_reason || '';
-      const fallbackBlockReason = payload.block_reason || blockedReasons || '';
-      const fallbackEligibility = payload.eligibility
-        || (fallbackBlockReason ? 'Blocked' : (payload.last_price != null || selectionReason ? 'Eligible' : 'Selected'));
-      const strategyRows = strategyMap[`${assetClass}|${String(row.symbol || '').toUpperCase()}`]
-        || strategyMap[`${assetClass}|${String(display.marketSymbol || '').toUpperCase()}`]
-        || strategyMap[`${assetClass}|${String(display.displaySymbol || '').toUpperCase()}`]
-        || [];
-      const derivedState = deriveUniverseStrategyState(strategyRows, fallbackEligibility, fallbackBlockReason);
+      const blockReason = payload.block_reason || blockedReasons || '';
+      const eligibility = payload.eligibility
+        || (blockReason ? 'Blocked' : (payload.last_price != null || selectionReason ? 'Eligible' : 'Selected'));
       const rank = toNumber(row.rank) ?? index + 1;
 
       return {
@@ -355,7 +365,6 @@ function normalizeUniverseRows(rows, assetClass, strategyMap = {}) {
         rawSymbol: row.symbol || '—',
         assetClass,
         rank,
-        sourceRank: rank,
         lastPrice: toNumber(payload.last_price ?? payload.price ?? payload.last),
         changePct: toPercent(payload.change_pct ?? payload.daily_change_pct ?? payload.changePercent),
         lastCandleAt: payload.last_candle_at || null,
@@ -364,14 +373,13 @@ function normalizeUniverseRows(rows, assetClass, strategyMap = {}) {
         trendScore: toNumber(payload.trend_score ?? payload.trend),
         stabilityScore: toNumber(payload.stability_score ?? payload.stability),
         compositeScore: toNumber(payload.composite_score ?? payload.score),
-        eligibility: derivedState.eligibility,
+        eligibility,
         selectionReason,
-        blockReason: derivedState.blockReason,
+        blockReason,
         raw: row,
       };
     })
-    .sort((left, right) => (left.sourceRank - right.sourceRank) || left.symbol.localeCompare(right.symbol))
-    .map((row, index) => ({ ...row, rank: index + 1 }));
+    .sort((left, right) => (left.rank - right.rank) || left.symbol.localeCompare(right.symbol));
 }
 
 export function normalizeStrategies(stockRows = [], cryptoRows = []) {
@@ -392,7 +400,18 @@ function classifyStrategyStatus(row) {
 function normalizeStrategyRows(rows, assetClass) {
   return rows.map((row) => {
     const display = resolveDisplayMeta(row, assetClass);
+    const primaryStrategy = formatSettingLabel(row.strategy_name || '—').replace(/\./g, ' ');
+    const blocker = stringifyList(row.blocked_reasons);
+    const thresholdsFailed = stringifyList(row.blocked_reasons || row.payload?.thresholds_failed);
+    const status = classifyStrategyStatus(row);
     const evaluatedAt = row.computed_at || row.candidate_timestamp || null;
+    const nextReevaluation = computeNextReevaluation(
+      row.timeframe,
+      row.candidate_timestamp,
+      evaluatedAt,
+      row.payload?.next_reevaluation,
+    );
+
     return {
       id: row.id || `${assetClass}-${row.symbol}-${row.strategy_name}`,
       symbol: display.displaySymbol,
@@ -400,19 +419,23 @@ function normalizeStrategyRows(rows, assetClass) {
       marketSymbol: display.marketSymbol,
       rawSymbol: row.symbol || '—',
       assetClass,
-      primaryStrategy: formatSettingLabel(row.strategy_name || '—').replace(/\./g, ' '),
+      primaryStrategy,
+      strategyLabel: `${primaryStrategy} ${row.timeframe || '—'}`.trim(),
       secondaryStrategies: stringifyList(row.payload?.secondary_strategies),
       strategyRankScore: toNumber(row.composite_score),
       readinessScore: toNumber(row.readiness_score),
-      status: classifyStrategyStatus(row),
-      blocker: stringifyList(row.blocked_reasons),
+      status,
+      blocker,
+      statusDetail: buildStrategyStatusDetail(status, blocker, thresholdsFailed),
       timeframe: row.timeframe || '—',
       regime: row.regime || '—',
       evaluatedAt,
+      candidateTimestamp: row.candidate_timestamp || null,
       thresholdsPassed: stringifyList(row.payload?.thresholds_passed),
-      thresholdsFailed: stringifyList(row.blocked_reasons || row.payload?.thresholds_failed),
+      thresholdsFailed,
       regimeRequirement: row.entry_policy || '—',
-      nextReevaluation: deriveNextReevaluation(row.payload?.next_reevaluation, evaluatedAt, row.timeframe),
+      nextReevaluation: nextReevaluation || '—',
+      isEvaluationOverdue: Boolean(toDate(nextReevaluation) && toDate(nextReevaluation).getTime() < Date.now()),
       previousSignalAttempts: stringifyList(row.payload?.previous_signal_attempts),
       explanation: row.decision_reason || stringifyList(row.blocked_reasons) || 'No explanation returned yet.',
       raw: row,

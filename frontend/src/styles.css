@@ -223,10 +223,6 @@ h3 { font-size: 1.15rem; }
 .action-button,
 .drawer-close,
 .banner button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
   border: 1px solid rgba(117, 240, 255, 0.22);
   border-radius: 16px;
   background: rgba(5, 18, 34, 0.76);
@@ -237,7 +233,6 @@ h3 { font-size: 1.15rem; }
 .nav-button {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
   gap: 10px;
   padding: 14px 16px;
   text-align: left;
@@ -366,7 +361,6 @@ input[type='number'] {
 .mini-stat,
 .mini-stat-tile {
   min-height: 110px;
-  padding: 16px;
 }
 
 .metric-value {
@@ -383,6 +377,10 @@ input[type='number'] {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-top: 16px;
+}
+
+.mini-stat {
+	padding: 16px;
 }
 
 .mini-stat-tile {
@@ -421,7 +419,7 @@ input[type='number'] {
   padding: 15px 16px;
   border-bottom: 1px solid rgba(117, 240, 255, 0.08);
   text-align: left;
-  vertical-align: top;
+  vertical-align: middle;
   overflow-wrap: anywhere;
 }
 
@@ -430,33 +428,6 @@ input[type='number'] {
   font-size: 0.84rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-}
-
-.table-wrap.centered-table th,
-.table-wrap.centered-table td {
-  text-align: center;
-  vertical-align: middle;
-}
-
-.table-wrap.universe-table table,
-.table-wrap.strategy-table table {
-  table-layout: auto;
-}
-
-.table-wrap.universe-table th:first-child,
-.table-wrap.universe-table td:first-child {
-  width: 72px;
-  min-width: 72px;
-}
-
-.table-wrap.universe-table th:last-child,
-.table-wrap.universe-table td:last-child {
-  width: 152px;
-  min-width: 152px;
-}
-
-.table-wrap.universe-table .status-pill {
-  min-width: 112px;
 }
 
 .clickable-row {
@@ -471,6 +442,97 @@ input[type='number'] {
   color: var(--muted);
   text-align: center;
   padding: 24px;
+}
+
+.strategy-table table {
+  table-layout: fixed;
+}
+
+.strategy-table th:nth-child(1),
+.strategy-table td:nth-child(1) {
+  width: 18%;
+}
+
+.strategy-table th:nth-child(2),
+.strategy-table td:nth-child(2) {
+  width: 38%;
+}
+
+.strategy-table th:nth-child(3),
+.strategy-table td:nth-child(3) {
+  width: 12%;
+  text-align: center;
+}
+
+.strategy-table th:nth-child(4),
+.strategy-table td:nth-child(4) {
+  width: 18%;
+}
+
+.strategy-table th:nth-child(5),
+.strategy-table td:nth-child(5) {
+  width: 14%;
+}
+
+.strategy-cell {
+  display: grid;
+  gap: 6px;
+}
+
+.strategy-symbol-cell,
+.strategy-score-cell,
+.strategy-status-cell,
+.strategy-regime-cell {
+  justify-items: center;
+  text-align: center;
+}
+
+.strategy-symbol {
+  font-weight: 700;
+}
+
+.strategy-title {
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.strategy-score {
+  font-size: 1.1rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.strategy-regime {
+  font-weight: 600;
+}
+
+.strategy-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.strategy-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(117, 240, 255, 0.22);
+  background: rgba(10, 21, 39, 0.76);
+  color: var(--cyan);
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.strategy-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
 }
 
 .status-pill {
@@ -651,6 +713,10 @@ input[type='number'] {
   background: rgba(4, 14, 28, 0.72);
 }
 
+.strategy-table {
+  min-width: 720px;
+}
+
 @media (max-width: 1180px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -741,36 +807,6 @@ input[type='number'] {
 .setting-input-stack {
   width: min(280px, 100%);
   justify-items: end;
-}
-
-.settings-command-grid .panel-header,
-.settings-command-grid .quick-row,
-.routing-banner .panel-header,
-.routing-card,
-.setting-input-stack,
-.setting-input-wrap {
-  text-align: center;
-}
-
-.settings-command-grid .panel-header,
-.routing-banner .panel-header {
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-}
-
-.settings-command-grid .quick-row > div:first-child,
-.routing-card {
-  margin-inline: auto;
-}
-
-.setting-input-stack {
-  justify-items: center;
-}
-
-.settings-toolbar .topbar-controls {
-  justify-content: center;
 }
 
 .hidden-input {

@@ -17,15 +17,15 @@ const STOCK_TIMEFRAMES = ['1h', '15m', '5m', '1d'];
 const CRYPTO_TIMEFRAMES = ['4h', '1h', '15m', '1d'];
 
 const CONTROL_MAP = {
-  refresh_universe: { path: '/controls/universe/run-once', buildPayload: () => ({ asset_class: 'all', force: true }) },
-  backfill_candles: { path: '/controls/candles/backfill', buildPayload: () => ({ asset_class: 'all', force: true }) },
-  sync_incremental_candles: { path: '/controls/candles/incremental', buildPayload: () => ({ asset_class: 'all' }) },
-  recompute_regime: { path: '/controls/regime/run-once', buildPayload: () => ({ asset_class: 'all', force: true }) },
-  refresh_strategies: { path: '/controls/strategy/run-once', buildPayload: () => ({ asset_class: 'all', force: true }) },
-  flatten_stocks: { path: '/controls/flatten/stock', buildPayload: () => ({ engage_kill_switch: true }) },
-  flatten_crypto: { path: '/controls/flatten/crypto', buildPayload: () => ({ engage_kill_switch: true }) },
-  flatten_all: { path: '/controls/flatten/all', buildPayload: () => ({ engage_kill_switch: true }) },
-  toggle_kill_switch: { path: '/controls/kill-switch/toggle', buildPayload: (payload) => ({ enabled: payload.enabled }) },
+  refresh_universe: { path: '/controls/universe/run-once', timeoutMs: 90000, buildPayload: () => ({ asset_class: 'all', force: true }) },
+  backfill_candles: { path: '/controls/candles/backfill', timeoutMs: 120000, buildPayload: () => ({ asset_class: 'all', force: true }) },
+  sync_incremental_candles: { path: '/controls/candles/incremental', timeoutMs: 90000, buildPayload: () => ({ asset_class: 'all' }) },
+  recompute_regime: { path: '/controls/regime/run-once', timeoutMs: 90000, buildPayload: () => ({ asset_class: 'all', force: true }) },
+  refresh_strategies: { path: '/controls/strategy/run-once', timeoutMs: 90000, buildPayload: () => ({ asset_class: 'all', force: true }) },
+  flatten_stocks: { path: '/controls/flatten/stock', timeoutMs: 30000, buildPayload: () => ({ engage_kill_switch: true }) },
+  flatten_crypto: { path: '/controls/flatten/crypto', timeoutMs: 30000, buildPayload: () => ({ engage_kill_switch: true }) },
+  flatten_all: { path: '/controls/flatten/all', timeoutMs: 30000, buildPayload: () => ({ engage_kill_switch: true }) },
+  toggle_kill_switch: { path: '/controls/kill-switch/toggle', timeoutMs: 20000, buildPayload: (payload) => ({ enabled: payload.enabled }) },
 };
 
 function makeUrl(path) {
@@ -40,15 +40,16 @@ async function readJson(response) {
 }
 
 async function fetchJson(path, options = {}) {
-  const { timeoutMs = /^\/controls\//.test(path) ? 60000 : 15000, ...requestOptions } = options;
   const controller = new AbortController();
+  const timeoutMs = options.timeoutMs ?? 15000;
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(makeUrl(path), {
-      headers: { Accept: 'application/json', ...(requestOptions.headers || {}) },
+      headers: { Accept: 'application/json', ...(options.headers || {}) },
+      cache: 'no-store',
       signal: controller.signal,
-      ...requestOptions,
+      ...options,
     });
 
     if (!response.ok) {
@@ -140,8 +141,8 @@ export async function loadLiveSnapshot() {
 
   const degraded = successfulEssential < mustHave.length;
   const settings = normalizeSettings(settingsRes.data || [], runtimeRes.data || null, controlsRes.data || null);
+  const universe = normalizeUniverse(stockUniverseRes.data || [], cryptoUniverseRes.data || []);
   const strategies = normalizeStrategies(mergeOkData(stockStrategyResults), mergeOkData(cryptoStrategyResults));
-  const universe = normalizeUniverse(stockUniverseRes.data || [], cryptoUniverseRes.data || [], strategies);
   const positions = normalizePositions(mergeOkData(stockPositionResults), mergeOkData(cryptoPositionResults));
   const logs = normalizeLogs(eventsRes.data || []);
   const riskRows = {
@@ -219,6 +220,7 @@ export async function executeControlAction(actionKey, payload = {}) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config.buildPayload(payload)),
+    timeoutMs: config.timeoutMs,
   });
 
   return response;

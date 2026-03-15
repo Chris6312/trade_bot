@@ -122,7 +122,9 @@ function formatNumber(value) {
 function formatTime(value) {
   if (!value) return '—';
   try {
-    return new Date(value).toLocaleString();
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return String(value);
+    return parsed.toLocaleString();
   } catch {
     return String(value);
   }
@@ -131,7 +133,9 @@ function formatTime(value) {
 function formatCompactTime(value) {
   if (!value) return '—';
   try {
-    return new Date(value).toLocaleString([], {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return String(value);
+    return parsed.toLocaleString([], {
       month: 'numeric',
       day: 'numeric',
       hour: 'numeric',
@@ -160,7 +164,9 @@ function sortStrategiesByReadiness(rows, direction = 'desc') {
     const rightMissing = Number.isNaN(rightValue);
     if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
     if (!leftMissing && leftValue !== rightValue) return (leftValue - rightValue) * multiplier;
-    return left.symbol.localeCompare(right.symbol) || left.primaryStrategy.localeCompare(right.primaryStrategy);
+    return left.symbol.localeCompare(right.symbol)
+      || left.timeframe.localeCompare(right.timeframe)
+      || left.primaryStrategy.localeCompare(right.primaryStrategy);
   });
 }
 
@@ -334,7 +340,11 @@ function App() {
       const scopeMatch = scope === 'all'
         || (scope === 'eligible' && isEligible)
         || (scope === 'blocked' && normalizedStatus === 'blocked');
-      const queryMatch = !search || String(row.symbol).toLowerCase().includes(search) || String(row.primaryStrategy).toLowerCase().includes(search);
+      const queryMatch = !search
+        || String(row.symbol).toLowerCase().includes(search)
+        || String(row.primaryStrategy).toLowerCase().includes(search)
+        || String(row.strategyLabel || '').toLowerCase().includes(search)
+        || String(row.timeframe || '').toLowerCase().includes(search);
       return scopeMatch && queryMatch;
     });
   }, [query, scope, snapshot.strategies]);
@@ -910,7 +920,6 @@ function UniversePage({ universe, onOpen, loading }) {
       <article className="panel-glass table-panel">
         <PanelHeader title="Stock universe" subtitle={loading ? 'Refreshing live rows…' : 'Updates on stock 5m candle refresh'} />
         <SimpleTable
-          className="centered-table universe-table"
           columns={['Rank', 'Symbol', 'Price', 'Change', 'Eligibility']}
           rows={universe.stocks.map((row) => [
             row.rank,
@@ -927,7 +936,6 @@ function UniversePage({ universe, onOpen, loading }) {
       <article className="panel-glass table-panel">
         <PanelHeader title="Crypto universe" subtitle={loading ? 'Refreshing live rows…' : 'Updates on crypto 15m candle refresh'} />
         <SimpleTable
-          className="centered-table universe-table"
           columns={['Rank', 'Pair', 'Price', 'Change', 'Eligibility']}
           rows={universe.crypto.map((row) => [
             row.rank,
@@ -972,14 +980,14 @@ function StrategiesPage({ strategies, onOpen, loading }) {
           )}
         />
         <SimpleTable
-          className="centered-table strategy-table"
-          columns={['Symbol', 'Primary', 'Readiness', 'Status', 'Regime']}
+          className="strategy-table"
+          columns={['Symbol', 'Strategy / cadence', 'Readiness', 'Status', 'Regime']}
           rows={stocks.map((row) => [
-            row.symbol,
-            row.primaryStrategy,
-            formatNumber(row.readinessScore),
-            <StatusPill label={row.status} tone={toneFromText(row.status)} />,
-            row.regime,
+            <StrategySymbolCell row={row} />,
+            <StrategyCadenceCell row={row} />,
+            <StrategyScoreCell row={row} />,
+            <StrategyStatusCell row={row} />,
+            <StrategyRegimeCell row={row} />,
           ])}
           onRowClick={(index) => onOpen({ type: 'strategy', item: stocks[index] })}
           emptyText="No stock strategy rows returned yet."
@@ -1001,20 +1009,71 @@ function StrategiesPage({ strategies, onOpen, loading }) {
           )}
         />
         <SimpleTable
-          className="centered-table strategy-table"
-          columns={['Symbol', 'Primary', 'Readiness', 'Status', 'Regime']}
+          className="strategy-table"
+          columns={['Symbol', 'Strategy / cadence', 'Readiness', 'Status', 'Regime']}
           rows={crypto.map((row) => [
-            row.symbol,
-            row.primaryStrategy,
-            formatNumber(row.readinessScore),
-            <StatusPill label={row.status} tone={toneFromText(row.status)} />,
-            row.regime,
+            <StrategySymbolCell row={row} />,
+            <StrategyCadenceCell row={row} />,
+            <StrategyScoreCell row={row} />,
+            <StrategyStatusCell row={row} />,
+            <StrategyRegimeCell row={row} />,
           ])}
           onRowClick={(index) => onOpen({ type: 'strategy', item: crypto[index] })}
           emptyText="No crypto strategy rows returned yet."
         />
       </article>
     </section>
+  );
+}
+
+
+function StrategySymbolCell({ row }) {
+  return (
+    <div className="strategy-cell strategy-symbol-cell">
+      <div className="strategy-symbol">{row.symbol}</div>
+      <div className="strategy-meta">{row.marketSymbol && row.marketSymbol !== row.symbol ? row.marketSymbol : row.assetClass}</div>
+    </div>
+  );
+}
+
+function StrategyCadenceCell({ row }) {
+  return (
+    <div className="strategy-cell">
+      <div className="strategy-title">{row.strategyLabel || `${row.primaryStrategy} ${row.timeframe}`}</div>
+      <div className="strategy-meta-row">
+        <span className="strategy-chip">{row.timeframe || '—'}</span>
+        <span className="strategy-meta">Eval {formatCompactTime(row.evaluatedAt)}</span>
+      </div>
+    </div>
+  );
+}
+
+function StrategyScoreCell({ row }) {
+  return (
+    <div className="strategy-cell strategy-score-cell">
+      <div className="strategy-score">{formatNumber(row.readinessScore)}</div>
+      <div className="strategy-meta">Rank {formatNumber(row.strategyRankScore)}</div>
+    </div>
+  );
+}
+
+function StrategyStatusCell({ row }) {
+  return (
+    <div className="strategy-cell strategy-status-cell">
+      <StatusPill label={row.status} tone={toneFromText(row.status)} />
+      <div className="strategy-meta">{row.statusDetail || 'Ready for drill-down'}</div>
+    </div>
+  );
+}
+
+function StrategyRegimeCell({ row }) {
+  return (
+    <div className="strategy-cell strategy-regime-cell">
+      <div className="strategy-regime">{titleCase(row.regime)}</div>
+      <div className={`strategy-meta ${row.isEvaluationOverdue ? 'warning-text' : ''}`}>
+        Next {formatCompactTime(row.nextReevaluation)}
+      </div>
+    </div>
   );
 }
 
@@ -1435,7 +1494,8 @@ function StrategyDetail({ item }) {
       <DetailRow label="Display symbol" value={item.symbol} />
       <DetailRow label="Venue symbol" value={item.marketSymbol || item.rawSymbol || '—'} />
       <DetailRow label="Primary strategy" value={item.primaryStrategy} />
-      <DetailRow label="Secondary strategy" value={item.secondaryStrategies || '—'} />
+      <DetailRow label="Timeframe" value={item.timeframe || '—'} />
+      <DetailRow label="Last evaluated" value={formatTime(item.evaluatedAt)} />
       <DetailRow label="Readiness score" value={formatNumber(item.readinessScore)} />
       <DetailRow label="Thresholds passed" value={item.thresholdsPassed || 'None'} />
       <DetailRow label="Thresholds failed" value={item.thresholdsFailed || 'None'} />
@@ -1499,7 +1559,6 @@ function UniverseDetail({ item }) {
       <DetailRow label="Asset name" value={item.displayName || '—'} />
       <DetailRow label="Venue symbol" value={item.marketSymbol || item.rawSymbol || '—'} />
       <DetailRow label="Rank" value={String(item.rank)} />
-      <DetailRow label="Source rank" value={String(item.sourceRank ?? item.rank)} />
       <DetailRow label="Last price" value={formatMoney(item.lastPrice)} />
       <DetailRow label="Change" value={<PercentValue value={item.changePct} />} />
       <DetailRow label="Liquidity score" value={formatNumber(item.liquidityScore)} />
