@@ -164,7 +164,8 @@ def test_position_sync_persists_open_orders_and_api_visibility(client) -> None:
         session.close()
 
     positions_response = client.get("/api/v1/positions/stock/current", params={"timeframe": "1h"})
-    assert positions_response.status_code == 404
+    assert positions_response.status_code == 200
+    assert positions_response.json() == []
 
     open_orders_response = client.get("/api/v1/positions/stock/open-orders", params={"timeframe": "1h"})
     assert open_orders_response.status_code == 200

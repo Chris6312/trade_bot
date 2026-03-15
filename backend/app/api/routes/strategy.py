@@ -21,7 +21,7 @@ def get_current_strategy_rows(
     _validate_asset_class(asset_class)
     rows = list_current_strategy_snapshots(db, asset_class=asset_class, timeframe=timeframe)
     if not rows:
-        raise HTTPException(status_code=404, detail="Strategy state not found")
+        return []
     return [StrategySnapshotRead.model_validate(row) for row in rows]
 
 

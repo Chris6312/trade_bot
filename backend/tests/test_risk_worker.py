@@ -375,3 +375,10 @@ def _seed_setting(db: Session, *, key: str, value: str) -> None:
         )
     )
     db.commit()
+
+
+
+def test_risk_api_returns_empty_list_when_no_current_rows(client) -> None:
+    response = client.get("/api/v1/risk/stock/current", params={"timeframe": "1h"})
+    assert response.status_code == 200
+    assert response.json() == []

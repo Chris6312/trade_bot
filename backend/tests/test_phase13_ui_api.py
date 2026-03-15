@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from backend.app.db.session import get_session_factory
 from backend.app.models.core import (
+    Candle,
     CandleFreshness,
     CandleSyncState,
     FeatureSyncState,
@@ -65,6 +66,38 @@ def test_phase13_support_routes_expose_ui_state(client) -> None:
                 fresh_through=now,
             )
         )
+        db.add_all([
+            Candle(
+                asset_class="stock",
+                venue="alpaca",
+                source="test",
+                symbol="AAPL",
+                timeframe="1h",
+                timestamp=now.replace(minute=0, second=0, microsecond=0),
+                open=100,
+                high=102,
+                low=99,
+                close=101,
+                volume=1000,
+                vwap=101,
+                trade_count=10,
+            ),
+            Candle(
+                asset_class="stock",
+                venue="alpaca",
+                source="test",
+                symbol="AAPL",
+                timeframe="1h",
+                timestamp=now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1),
+                open=101,
+                high=104,
+                low=100,
+                close=103,
+                volume=1200,
+                vwap=103,
+                trade_count=12,
+            ),
+        ])
         db.add(
             FeatureSyncState(
                 asset_class="stock",
@@ -84,7 +117,10 @@ def test_phase13_support_routes_expose_ui_state(client) -> None:
 
     universe_response = client.get("/api/v1/universe/stock/current")
     assert universe_response.status_code == 200
-    assert universe_response.json()[0]["symbol"] == "AAPL"
+    payload = universe_response.json()[0]
+    assert payload["symbol"] == "AAPL"
+    assert payload["payload"]["last_price"] == 103.0
+    assert round(payload["payload"]["change_pct"], 2) == 1.98
 
     candle_response = client.get("/api/v1/data/candles/stock/sync-state")
     assert candle_response.status_code == 200

@@ -20,8 +20,8 @@ def create_account_snapshot(
     return AccountSnapshotRead.model_validate(record)
 
 
-@router.get("/latest/{account_scope}", response_model=AccountSnapshotRead)
-def get_latest_account_snapshot(account_scope: str, db: Session = Depends(get_db)) -> AccountSnapshotRead:
+@router.get("/latest/{account_scope}", response_model=AccountSnapshotRead | None)
+def get_latest_account_snapshot(account_scope: str, db: Session = Depends(get_db)) -> AccountSnapshotRead | None:
     record = (
         db.query(AccountSnapshot)
         .filter(AccountSnapshot.account_scope == account_scope)
@@ -30,6 +30,6 @@ def get_latest_account_snapshot(account_scope: str, db: Session = Depends(get_db
     )
 
     if record is None:
-        raise HTTPException(status_code=404, detail="Account snapshot not found")
+        return None
 
     return AccountSnapshotRead.model_validate(record)

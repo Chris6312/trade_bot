@@ -28,7 +28,7 @@ def get_current_positions(
     _validate_asset_class(asset_class)
     rows = list_current_position_states(db, asset_class=asset_class, timeframe=timeframe)
     if not rows:
-        raise HTTPException(status_code=404, detail="Position state not found")
+        return []
     return [PositionStateRead.model_validate(row) for row in rows]
 
 

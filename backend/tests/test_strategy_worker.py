@@ -166,6 +166,13 @@ def test_strategy_api_exposes_score_and_readiness_output(client) -> None:
 
 
 
+def test_strategy_api_returns_empty_list_when_no_current_rows(client) -> None:
+    response = client.get("/api/v1/strategy/stock/current", params={"timeframe": "1h"})
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+
 def _row(rows, *, symbol: str, strategy_name: str):
     return next(row for row in rows if row.symbol == symbol and row.strategy_name == strategy_name)
 

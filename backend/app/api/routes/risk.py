@@ -17,7 +17,7 @@ def get_current_risk_rows(
     _validate_asset_class(asset_class)
     rows = list_current_risk_snapshots(db, asset_class=asset_class, timeframe=timeframe)
     if not rows:
-        raise HTTPException(status_code=404, detail="Risk state not found")
+        return []
     return [RiskSnapshotRead.model_validate(row) for row in rows]
 
 
