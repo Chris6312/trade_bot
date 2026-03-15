@@ -19,6 +19,8 @@ from backend.app.api.routes.strategy import router as strategy_router
 from backend.app.api.routes.system_events import router as system_event_router
 from backend.app.api.routes.workflows import router as workflow_router
 from backend.app.core.config import get_settings
+from backend.app.db.session import get_session_factory
+from backend.app.workers.scheduler_worker import SchedulerWorker
 
 settings = get_settings()
 
@@ -26,7 +28,13 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.settings = settings
-    yield
+    scheduler = SchedulerWorker(session_factory=get_session_factory(), settings=settings)
+    app.state.scheduler = scheduler
+    scheduler.start()
+    try:
+        yield
+    finally:
+        scheduler.stop()
 
 
 app = FastAPI(

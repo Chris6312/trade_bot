@@ -49,6 +49,7 @@ button {
   position: relative;
   display: grid;
   grid-template-columns: 292px 1fr;
+  transition: grid-template-columns 0.2s ease;
   min-height: 100vh;
 }
 
@@ -100,7 +101,7 @@ button {
 }
 
 .main-stage > * {
-  width: min(100%, 1420px);
+  width: min(100%, 1560px);
   margin-inline: auto;
 }
 
@@ -219,6 +220,66 @@ h3 { font-size: 1.15rem; }
   padding: 12px;
 }
 
+.app-shell.sidebar-collapsed {
+  grid-template-columns: 108px 1fr;
+}
+
+.brand-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.brand-copy {
+  min-width: 0;
+}
+
+.collapse-toggle {
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(117, 240, 255, 0.22);
+  border-radius: 16px;
+  background: rgba(5, 18, 34, 0.76);
+  color: var(--text);
+}
+
+.sidebar.collapsed {
+  padding-inline: 10px;
+}
+
+.sidebar.collapsed .brand-lockup {
+  flex-direction: column;
+  align-items: center;
+  padding-inline: 12px;
+}
+
+.sidebar.collapsed .brand-head {
+  justify-content: center;
+}
+
+.sidebar.collapsed .status-card,
+.sidebar.collapsed .nav-panel {
+  padding-inline: 10px;
+}
+
+.sidebar-state-grid.compact {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.sidebar.collapsed .nav-button {
+  justify-content: center;
+  padding: 14px 0;
+}
+
+.sidebar.collapsed .status-pill {
+  width: 100%;
+  min-width: 0;
+  padding-inline: 8px;
+  font-size: 0.78rem;
+}
+
 .nav-button,
 .action-button,
 .drawer-close,
@@ -329,7 +390,7 @@ input[type='number'] {
 
 .dashboard-grid,
 .settings-page-grid {
-  width: min(100%, 1360px);
+  width: min(100%, 1500px);
   margin-inline: auto;
 }
 
@@ -416,7 +477,7 @@ input[type='number'] {
 
 .table-wrap th,
 .table-wrap td {
-  padding: 15px 16px;
+  padding: 13px 14px;
   border-bottom: 1px solid rgba(117, 240, 255, 0.08);
   text-align: left;
   vertical-align: middle;
@@ -450,17 +511,17 @@ input[type='number'] {
 
 .strategy-table th:nth-child(1),
 .strategy-table td:nth-child(1) {
-  width: 18%;
+  width: 16%;
 }
 
 .strategy-table th:nth-child(2),
 .strategy-table td:nth-child(2) {
-  width: 38%;
+  width: 42%;
 }
 
 .strategy-table th:nth-child(3),
 .strategy-table td:nth-child(3) {
-  width: 12%;
+  width: 10%;
   text-align: center;
 }
 
@@ -476,7 +537,7 @@ input[type='number'] {
 
 .strategy-cell {
   display: grid;
-  gap: 6px;
+  gap: 5px;
 }
 
 .strategy-symbol-cell,
@@ -714,7 +775,19 @@ input[type='number'] {
 }
 
 .strategy-table {
-  min-width: 720px;
+  min-width: 660px;
+}
+
+.strategy-table td {
+  overflow-wrap: normal;
+  word-break: keep-all;
+}
+
+.strategy-status-cell .strategy-meta,
+.strategy-regime-cell .strategy-meta,
+.strategy-title,
+.strategy-meta-row {
+  white-space: normal;
 }
 
 @media (max-width: 1180px) {

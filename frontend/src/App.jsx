@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './styles.css';
 import { executeControlAction, fetchLiveRolloutChecklist, loadLiveSnapshot, runConnectionDiagnostics, saveSettingItems, saveSettings } from './api/liveApi';
 
@@ -176,6 +176,14 @@ function titleCase(value) {
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
+function shortModeLabel(value) {
+  const normalized = String(value || '').toLowerCase();
+  if (normalized === 'paper') return 'Paper';
+  if (normalized === 'live') return 'Live';
+  if (normalized === 'mixed') return 'Mixed';
+  return titleCase(value || '—');
+}
+
 function buildSettingMap(settings) {
   return settings.reduce((acc, setting) => {
     acc[setting.key] = setting.value;
@@ -232,6 +240,10 @@ function applyRoutingExclusivity(nextMap, changedKey, changedValue) {
 
 function App() {
   const [page, setPage] = useState('dashboard');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem('trade_bot_sidebar_collapsed') === 'true';
+  });
   const [scope, setScope] = useState('all');
   const [query, setQuery] = useState('');
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -259,8 +271,11 @@ function App() {
   const [settingsQuery, setSettingsQuery] = useState('');
   const [reviewOpen, setReviewOpen] = useState(false);
   const importInputRef = useRef(null);
+  const refreshInFlightRef = useRef(false);
 
-  const refresh = async ({ quiet = false } = {}) => {
+  const refresh = useCallback(async ({ quiet = false } = {}) => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
     if (!quiet) setLoading(true);
     setError('');
     try {
@@ -270,21 +285,22 @@ function App() {
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Failed to load live data.');
     } finally {
+      refreshInFlightRef.current = false;
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     if (!autoRefresh) return undefined;
     const interval = window.setInterval(() => {
       refresh({ quiet: true });
-    }, 12000);
+    }, 5000);
     return () => window.clearInterval(interval);
-  }, [autoRefresh]);
+  }, [autoRefresh, refresh]);
 
   useEffect(() => {
     if (!drawer) return undefined;
@@ -294,6 +310,24 @@ function App() {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [drawer]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    window.localStorage.setItem('trade_bot_sidebar_collapsed', sidebarCollapsed ? 'true' : 'false');
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        refresh({ quiet: true });
+      }
+    };
+    const onFocus = () => refresh({ quiet: true });
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [refresh, sidebarCollapsed]);
 
   const scopeOptions = SCOPE_OPTIONS_BY_PAGE[page] || DEFAULT_SCOPE_OPTIONS;
 
@@ -632,9 +666,15 @@ function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <BackgroundGlow />
-      <Sidebar page={page} setPage={setPage} snapshot={snapshot} />
+      <Sidebar
+        page={page}
+        setPage={setPage}
+        snapshot={snapshot}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed((current) => !current)}
+      />
       <main className="main-stage">
         <TopBar
           page={page}
@@ -739,23 +779,39 @@ function BackgroundGlow() {
   );
 }
 
-function Sidebar({ page, setPage, snapshot }) {
+function Sidebar({ page, setPage, snapshot, collapsed, onToggleCollapse }) {
+  const modeLabel = collapsed ? shortModeLabel(snapshot.health.mode) : snapshot.health.mode;
+  const killLabel = collapsed ? (snapshot.controlState.killSwitchEnabled ? 'KS On' : 'KS Off') : (snapshot.controlState.killSwitchEnabled ? 'Kill switch on' : 'Kill switch off');
+
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
       <section className="panel-glass brand-lockup">
-        <div className="brand-mark">TB</div>
-        <div>
-          <div className="eyebrow">Operator Console</div>
-          <h1>Trade_Bot</h1>
+        <div className="brand-head">
+          <div className="brand-mark">TB</div>
+          {!collapsed ? (
+            <div className="brand-copy">
+              <div className="eyebrow">Operator Console</div>
+              <h1>Trade_Bot</h1>
+            </div>
+          ) : null}
         </div>
+        <button
+          type="button"
+          className="collapse-toggle"
+          onClick={onToggleCollapse}
+          aria-label={collapsed ? 'Expand menu' : 'Collapse menu'}
+          title={collapsed ? 'Expand menu' : 'Collapse menu'}
+        >
+          {collapsed ? '»' : '«'}
+        </button>
       </section>
 
       <section className="panel-soft status-card">
-        <div className="eyebrow">System state</div>
-        <div className="sidebar-state-grid">
+        <div className="eyebrow">{collapsed ? 'State' : 'System state'}</div>
+        <div className={`sidebar-state-grid ${collapsed ? 'compact' : ''}`}>
           <StatusPill label={snapshot.health.status} tone={snapshot.health.status === 'ok' || snapshot.health.status === 'healthy' ? 'positive' : 'warning'} />
-          <StatusPill label={snapshot.health.mode} tone="neutral" />
-          <StatusPill label={snapshot.controlState.killSwitchEnabled ? 'Kill switch on' : 'Kill switch off'} tone={snapshot.controlState.killSwitchEnabled ? 'danger' : 'positive'} />
+          <StatusPill label={modeLabel} tone="neutral" />
+          <StatusPill label={killLabel} tone={snapshot.controlState.killSwitchEnabled ? 'danger' : 'positive'} />
         </div>
       </section>
 
@@ -766,9 +822,11 @@ function Sidebar({ page, setPage, snapshot }) {
             type="button"
             className={`nav-button ${page === item.id ? 'active' : ''}`}
             onClick={() => setPage(item.id)}
+            title={item.label}
+            aria-label={item.label}
           >
             <span>{item.icon}</span>
-            <span>{item.label}</span>
+            {!collapsed ? <span>{item.label}</span> : null}
           </button>
         ))}
       </nav>
@@ -782,7 +840,7 @@ function TopBar({ page, scope, setScope, scopeOptions = DEFAULT_SCOPE_OPTIONS, q
       <div>
         <div className="eyebrow">{titleCase(page)}</div>
         <h2>{titleCase(page)} panel</h2>
-        <div className="subtle">Last live refresh: {formatTime(fetchedAt)}</div>
+        <div className="subtle">Last UI fetch: {formatTime(fetchedAt)}</div>
       </div>
 
       <div className="topbar-controls">
@@ -1031,7 +1089,6 @@ function StrategySymbolCell({ row }) {
   return (
     <div className="strategy-cell strategy-symbol-cell">
       <div className="strategy-symbol">{row.symbol}</div>
-      <div className="strategy-meta">{row.marketSymbol && row.marketSymbol !== row.symbol ? row.marketSymbol : row.assetClass}</div>
     </div>
   );
 }
@@ -1039,7 +1096,7 @@ function StrategySymbolCell({ row }) {
 function StrategyCadenceCell({ row }) {
   return (
     <div className="strategy-cell">
-      <div className="strategy-title">{row.strategyLabel || `${row.primaryStrategy} ${row.timeframe}`}</div>
+      <div className="strategy-title">{row.primaryStrategy || row.strategyLabel}</div>
       <div className="strategy-meta-row">
         <span className="strategy-chip">{row.timeframe || '—'}</span>
         <span className="strategy-meta">Eval {formatCompactTime(row.evaluatedAt)}</span>
@@ -1052,7 +1109,6 @@ function StrategyScoreCell({ row }) {
   return (
     <div className="strategy-cell strategy-score-cell">
       <div className="strategy-score">{formatNumber(row.readinessScore)}</div>
-      <div className="strategy-meta">Rank {formatNumber(row.strategyRankScore)}</div>
     </div>
   );
 }
@@ -1497,6 +1553,7 @@ function StrategyDetail({ item }) {
       <DetailRow label="Timeframe" value={item.timeframe || '—'} />
       <DetailRow label="Last evaluated" value={formatTime(item.evaluatedAt)} />
       <DetailRow label="Readiness score" value={formatNumber(item.readinessScore)} />
+      <DetailRow label="Strategy rank score" value={formatNumber(item.strategyRankScore)} />
       <DetailRow label="Thresholds passed" value={item.thresholdsPassed || 'None'} />
       <DetailRow label="Thresholds failed" value={item.thresholdsFailed || 'None'} />
       <DetailRow label="Regime requirement" value={item.regimeRequirement} />

@@ -372,7 +372,7 @@ function normalizeUniverseRows(rows, assetClass) {
         participationScore: toNumber(payload.participation_score ?? payload.participation),
         trendScore: toNumber(payload.trend_score ?? payload.trend),
         stabilityScore: toNumber(payload.stability_score ?? payload.stability),
-        compositeScore: toNumber(payload.composite_score ?? payload.score),
+        compositeScore: toNumber(payload.composite_score ?? payload.strategy_rank_score ?? payload.score),
         eligibility,
         selectionReason,
         blockReason,

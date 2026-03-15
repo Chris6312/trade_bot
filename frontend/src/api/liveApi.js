@@ -119,7 +119,7 @@ export async function loadLiveSnapshot() {
     tryFetch('/settings'),
     tryFetch('/settings/runtime/snapshot'),
     tryFetch('/controls/snapshot'),
-    tryFetch('/system-events?limit=40'),
+    tryFetch('/system-events?limit=100'),
     tryFetch('/universe/stock/current'),
     tryFetch('/universe/crypto/current'),
     Promise.all(timeframePaths('/strategy/stock/current', STOCK_TIMEFRAMES).map((path) => tryFetch(path))),
