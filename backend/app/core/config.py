@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     kraken_api_base_url: str = "https://api.kraken.com/0"
     alpaca_trading_api_base_url: str = "https://paper-api.alpaca.markets"
     alpaca_market_data_base_url: str = "https://data.alpaca.markets"
+    alpaca_stock_data_feed: str = "iex"
     public_api_base_url: str = "https://api.public.com"
     broker_request_timeout_seconds: float = 10.0
     kraken_quote_currency: str = "ZUSD"
@@ -56,8 +57,8 @@ class Settings(BaseSettings):
 
     stock_default_backfill_bars: int = 500
     crypto_default_backfill_bars: int = 720
-    stock_feature_timeframes: str = "1h"
-    crypto_feature_timeframes: str = "1h"
+    stock_feature_timeframes: str = "1h,15m,5m,1d"
+    crypto_feature_timeframes: str = "4h,1h,15m,1d"
     feature_lookback_bars: int = 20
 
     max_account_deployment_pct: float = 0.90

@@ -13,6 +13,7 @@ def _seed_alpaca_env(monkeypatch) -> None:
     monkeypatch.setenv("ALPACA_PAPER_SECRET_CRYPTO", "alpaca-crypto-secret")
     monkeypatch.setenv("ALPACA_TRADING_API_BASE_URL", "https://paper-api.alpaca.test")
     monkeypatch.setenv("ALPACA_MARKET_DATA_BASE_URL", "https://data.alpaca.test")
+    monkeypatch.setenv("ALPACA_STOCK_DATA_FEED", "iex")
     get_settings.cache_clear()
 
 
@@ -52,28 +53,18 @@ def test_alpaca_crypto_paper_account_state(monkeypatch) -> None:
     assert str(state.positions[0].quantity) == "0.01"
 
 
-def test_alpaca_stock_ohlcv_fetch(monkeypatch) -> None:
+def test_alpaca_stock_ohlcv_fetch_defaults_to_iex_feed(monkeypatch) -> None:
     _seed_alpaca_env(monkeypatch)
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v2/stocks/bars"
         assert request.url.params["symbols"] == "AAPL,MSFT"
+        assert request.url.params["feed"] == "iex"
         return httpx.Response(
             200,
             json={
                 "bars": {
-                    "AAPL": [
-                        {
-                            "t": "2026-03-13T14:30:00Z",
-                            "o": 211.5,
-                            "h": 212.1,
-                            "l": 210.8,
-                            "c": 211.9,
-                            "v": 12345,
-                            "n": 321,
-                            "vw": 211.6,
-                        }
-                    ],
+                    "AAPL": [{"t": "2026-03-13T14:30:00Z", "o": 211.5, "h": 212.1, "l": 210.8, "c": 211.9, "v": 12345, "n": 321, "vw": 211.6}],
                     "MSFT": [],
                 }
             },

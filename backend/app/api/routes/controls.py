@@ -104,7 +104,7 @@ def backfill_candles(payload: ControlActionRequest, db: Session = Depends(get_db
     worker = SingleCandleWorker(db)
     settings = get_settings()
     details = _run_candle_action(worker=worker, db=db, payload=payload, mode="backfill", settings=settings)
-    _create_event(db, event_type="control.candle_backfill", severity="info", message="Candle backfill executed.", payload={"asset_class": payload.asset_class})
+    _create_event(db, event_type="control.candle_backfill", severity="info", message="Candle backfill executed.", payload={"asset_class": payload.asset_class, "timeframe": payload.timeframe})
     return ControlActionResponse(action="backfill_candles", status="completed", message="Candle backfill completed.", details=details, created_at=datetime.now(UTC))
 
 
@@ -113,89 +113,59 @@ def sync_incremental_candles(payload: ControlActionRequest, db: Session = Depend
     worker = SingleCandleWorker(db)
     settings = get_settings()
     details = _run_candle_action(worker=worker, db=db, payload=payload, mode="incremental", settings=settings)
-    _create_event(db, event_type="control.candle_incremental", severity="info", message="Incremental candle sync executed.", payload={"asset_class": payload.asset_class})
+    _create_event(db, event_type="control.candle_incremental", severity="info", message="Incremental candle sync executed.", payload={"asset_class": payload.asset_class, "timeframe": payload.timeframe})
     return ControlActionResponse(action="sync_incremental_candles", status="completed", message="Incremental candle sync completed.", details=details, created_at=datetime.now(UTC))
 
 
 @router.post("/regime/run-once", response_model=ControlActionResponse)
 def recompute_regime(payload: ControlActionRequest, db: Session = Depends(get_db)) -> ControlActionResponse:
-    worker = RegimeWorker(db)
+    settings = get_settings()
+    worker = RegimeWorker(db, settings=settings)
     details: list[dict[str, object]] = []
     if payload.asset_class in {"all", "stock"}:
-        summary = worker.build_stock_regime(timeframe=payload.timeframe)
-        details.append({"asset_class": "stock", "regime": summary.regime, "entry_policy": summary.entry_policy, "symbol_count": summary.symbol_count})
+        for timeframe in _resolve_requested_timeframes(settings, asset_class="stock", requested_timeframe=payload.timeframe):
+            summary = worker.build_stock_regime(timeframe=timeframe)
+            details.append({"asset_class": "stock", "timeframe": timeframe, "regime": summary.regime, "entry_policy": summary.entry_policy, "symbol_count": summary.symbol_count})
     if payload.asset_class in {"all", "crypto"}:
-        summary = worker.build_crypto_regime(timeframe=payload.timeframe)
-        details.append({"asset_class": "crypto", "regime": summary.regime, "entry_policy": summary.entry_policy, "symbol_count": summary.symbol_count})
-    _create_event(db, event_type="control.regime_run", severity="info", message="Regime recompute executed.", payload={"asset_class": payload.asset_class})
+        for timeframe in _resolve_requested_timeframes(settings, asset_class="crypto", requested_timeframe=payload.timeframe):
+            summary = worker.build_crypto_regime(timeframe=timeframe)
+            details.append({"asset_class": "crypto", "timeframe": timeframe, "regime": summary.regime, "entry_policy": summary.entry_policy, "symbol_count": summary.symbol_count})
+    _create_event(db, event_type="control.regime_run", severity="info", message="Regime recompute executed.", payload={"asset_class": payload.asset_class, "timeframe": payload.timeframe})
     return ControlActionResponse(action="recompute_regime", status="completed", message="Regime recompute completed.", details=details, created_at=datetime.now(UTC))
 
 
 @router.post("/strategy/run-once", response_model=ControlActionResponse)
 def refresh_strategies(payload: ControlActionRequest, db: Session = Depends(get_db)) -> ControlActionResponse:
-    feature_worker = FeatureWorker(db)
-    strategy_worker = StrategyWorker(db)
+    settings = get_settings()
+    feature_worker = FeatureWorker(db, settings=settings)
+    strategy_worker = StrategyWorker(db, settings=settings)
     details: list[dict[str, object]] = []
     if payload.asset_class in {"all", "stock"}:
-        feature_summary = feature_worker.build_stock_features(timeframe=payload.timeframe)
-        strategy_summary = strategy_worker.build_stock_candidates(timeframe=payload.timeframe)
-        details.append({
-            "asset_class": "stock",
-            "computed_features": feature_summary.computed_snapshots,
-            "evaluated_rows": strategy_summary.evaluated_rows,
-            "ready_rows": strategy_summary.ready_rows,
-            "blocked_rows": strategy_summary.blocked_rows,
-        })
+        for timeframe in _resolve_requested_timeframes(settings, asset_class="stock", requested_timeframe=payload.timeframe):
+            feature_summary = feature_worker.build_stock_features(timeframe=timeframe)
+            strategy_summary = strategy_worker.build_stock_candidates(timeframe=timeframe)
+            details.append({"asset_class": "stock", "timeframe": timeframe, "computed_features": feature_summary.computed_snapshots, "evaluated_rows": strategy_summary.evaluated_rows, "ready_rows": strategy_summary.ready_rows, "blocked_rows": strategy_summary.blocked_rows})
     if payload.asset_class in {"all", "crypto"}:
-        feature_summary = feature_worker.build_crypto_features(timeframe=payload.timeframe)
-        strategy_summary = strategy_worker.build_crypto_candidates(timeframe=payload.timeframe)
-        details.append({
-            "asset_class": "crypto",
-            "computed_features": feature_summary.computed_snapshots,
-            "evaluated_rows": strategy_summary.evaluated_rows,
-            "ready_rows": strategy_summary.ready_rows,
-            "blocked_rows": strategy_summary.blocked_rows,
-        })
-    _create_event(db, event_type="control.strategy_run", severity="info", message="Strategy refresh executed.", payload={"asset_class": payload.asset_class})
+        for timeframe in _resolve_requested_timeframes(settings, asset_class="crypto", requested_timeframe=payload.timeframe):
+            feature_summary = feature_worker.build_crypto_features(timeframe=timeframe)
+            strategy_summary = strategy_worker.build_crypto_candidates(timeframe=timeframe)
+            details.append({"asset_class": "crypto", "timeframe": timeframe, "computed_features": feature_summary.computed_snapshots, "evaluated_rows": strategy_summary.evaluated_rows, "ready_rows": strategy_summary.ready_rows, "blocked_rows": strategy_summary.blocked_rows})
+    _create_event(db, event_type="control.strategy_run", severity="info", message="Strategy refresh executed.", payload={"asset_class": payload.asset_class, "timeframe": payload.timeframe})
     return ControlActionResponse(action="refresh_strategies", status="completed", message="Strategy refresh completed.", details=details, created_at=datetime.now(UTC))
 
 
 @router.post("/flatten/{scope}", response_model=ControlActionResponse)
 def request_flatten(scope: str, payload: FlattenRequest, db: Session = Depends(get_db)) -> ControlActionResponse:
-    if scope not in {"stocks", "crypto", "all"}:
+    if scope not in {"stocks", "crypto", "all", "stock"}:
         raise HTTPException(status_code=404, detail="Flatten scope not supported")
     details: list[dict[str, object]] = []
     if payload.engage_kill_switch:
-        upsert_setting(
-            db,
-            key="controls.kill_switch_enabled",
-            value="true",
-            value_type="bool",
-            description="Master kill switch blocking new entries.",
-        )
+        upsert_setting(db, key="controls.kill_switch_enabled", value="true", value_type="bool", description="Master kill switch blocking new entries.")
         details.append({"kill_switch_enabled": True})
-    _create_event(
-        db,
-        event_type="control.flatten_requested",
-        severity="warning",
-        message=f"Manual flatten requested for {scope}.",
-        payload={"scope": scope, "engage_kill_switch": payload.engage_kill_switch, "note": payload.note, "status": "manual_follow_up_required"},
-    )
-    create_audit_event(
-        db,
-        event_type="audit.flatten_requested",
-        severity="warning",
-        message=f"Operator requested manual flatten for {scope}.",
-        payload={"scope": scope, "engage_kill_switch": payload.engage_kill_switch, "note": payload.note, "status": "manual_follow_up_required"},
-    )
+    _create_event(db, event_type="control.flatten_requested", severity="warning", message=f"Manual flatten requested for {scope}.", payload={"scope": scope, "engage_kill_switch": payload.engage_kill_switch, "note": payload.note, "status": "manual_follow_up_required"})
+    create_audit_event(db, event_type="audit.flatten_requested", severity="warning", message=f"Operator requested manual flatten for {scope}.", payload={"scope": scope, "engage_kill_switch": payload.engage_kill_switch, "note": payload.note, "status": "manual_follow_up_required"})
     db.commit()
-    return ControlActionResponse(
-        action=f"flatten_{scope}",
-        status="queued_manual_action",
-        message="Flatten request recorded. Kill switch engaged when requested. Automated broker liquidation is not implemented in this phase.",
-        details=details,
-        created_at=datetime.now(UTC),
-    )
+    return ControlActionResponse(action=f"flatten_{scope}", status="queued_manual_action", message="Flatten request recorded. Kill switch engaged when requested. Automated broker liquidation is not implemented in this phase.", details=details, created_at=datetime.now(UTC))
 
 
 def _run_candle_action(*, worker: SingleCandleWorker, db: Session, payload: ControlActionRequest, mode: str, settings) -> list[dict[str, object]]:
@@ -204,10 +174,12 @@ def _run_candle_action(*, worker: SingleCandleWorker, db: Session, payload: Cont
     requests: list[tuple[str, str, list[str]]] = []
     if payload.asset_class in {"all", "stock"}:
         stock_symbols = payload.symbols or [row.symbol for row in list_universe_symbols(db, asset_class="stock", trade_date=trade_date)]
-        requests.append(("stock", payload.timeframe or (settings.stock_feature_timeframe_list[0] if settings.stock_feature_timeframe_list else "1h"), stock_symbols))
+        for timeframe in _resolve_requested_timeframes(settings, asset_class="stock", requested_timeframe=payload.timeframe):
+            requests.append(("stock", timeframe, stock_symbols))
     if payload.asset_class in {"all", "crypto"}:
         crypto_symbols = payload.symbols or [row.symbol for row in list_universe_symbols(db, asset_class="crypto", trade_date=trade_date)]
-        requests.append(("crypto", payload.timeframe or (settings.crypto_feature_timeframe_list[0] if settings.crypto_feature_timeframe_list else "1h"), crypto_symbols))
+        for timeframe in _resolve_requested_timeframes(settings, asset_class="crypto", requested_timeframe=payload.timeframe):
+            requests.append(("crypto", timeframe, crypto_symbols))
 
     for asset_class, timeframe, symbols in requests:
         if asset_class == "stock":
@@ -218,6 +190,13 @@ def _run_candle_action(*, worker: SingleCandleWorker, db: Session, payload: Cont
     return details
 
 
+def _resolve_requested_timeframes(settings, *, asset_class: str, requested_timeframe: str | None) -> list[str]:
+    if requested_timeframe:
+        return [requested_timeframe]
+    configured = settings.stock_feature_timeframe_list if asset_class == "stock" else settings.crypto_feature_timeframe_list
+    return list(configured or ["1h"])
+
+
 def _setting_to_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
@@ -225,12 +204,4 @@ def _setting_to_bool(value: object) -> bool:
 
 
 def _create_event(db: Session, *, event_type: str, severity: str, message: str, payload: dict[str, object] | None = None) -> None:
-    create_system_event(
-        db,
-        event_type=event_type,
-        severity=severity,
-        message=message,
-        event_source="frontend_controls",
-        payload=payload,
-        commit=True,
-    )
+    create_system_event(db, event_type=event_type, severity=severity, message=message, event_source="frontend_controls", payload=payload, commit=True)

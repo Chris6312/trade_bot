@@ -4,113 +4,24 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from backend.app.db.session import get_session_factory
-from backend.app.models.core import (
-    Candle,
-    CandleFreshness,
-    CandleSyncState,
-    FeatureSyncState,
-    Setting,
-    SystemEvent,
-    UniverseConstituent,
-    UniverseRun,
-)
+from backend.app.models.core import Candle, CandleFreshness, CandleSyncState, FeatureSyncState, Setting, SystemEvent, UniverseConstituent, UniverseRun
 from backend.app.services.universe_service import trading_date_for_now
 
 
 def test_phase13_support_routes_expose_ui_state(client) -> None:
     with get_session_factory()() as db:
         now = datetime.now(UTC)
-        run = UniverseRun(
-            asset_class="stock",
-            venue="alpaca",
-            trade_date=trading_date_for_now(now),
-            source="ai",
-            status="resolved",
-            resolved_at=now,
-            payload={"resolution": "ai"},
-        )
+        run = UniverseRun(asset_class="stock", venue="alpaca", trade_date=trading_date_for_now(now), source="ai", status="resolved", resolved_at=now, payload={"resolution": "ai"})
         db.add(run)
         db.flush()
-        db.add(
-            UniverseConstituent(
-                universe_run_id=run.id,
-                asset_class="stock",
-                venue="alpaca",
-                symbol="AAPL",
-                rank=1,
-                source="ai",
-                selection_reason="ranked by ai",
-                payload={"ai_rank_score": 0.91},
-            )
-        )
-        db.add(
-            CandleSyncState(
-                asset_class="stock",
-                venue="alpaca",
-                symbol="AAPL",
-                timeframe="1h",
-                last_synced_at=now,
-                last_candle_at=now,
-                last_status="synced",
-                last_error=None,
-            )
-        )
-        db.add(
-            CandleFreshness(
-                asset_class="stock",
-                venue="alpaca",
-                symbol="AAPL",
-                timeframe="1h",
-                last_synced_at=now,
-                last_candle_at=now,
-                fresh_through=now,
-            )
-        )
+        db.add(UniverseConstituent(universe_run_id=run.id, asset_class="stock", venue="alpaca", symbol="AAPL", rank=1, source="ai", selection_reason="ranked by ai", payload={"ai_rank_score": 0.91}))
+        db.add(CandleSyncState(asset_class="stock", venue="alpaca", symbol="AAPL", timeframe="1h", last_synced_at=now, last_candle_at=now, last_status="synced", last_error=None))
+        db.add(CandleFreshness(asset_class="stock", venue="alpaca", symbol="AAPL", timeframe="1h", last_synced_at=now, last_candle_at=now, fresh_through=now))
         db.add_all([
-            Candle(
-                asset_class="stock",
-                venue="alpaca",
-                source="test",
-                symbol="AAPL",
-                timeframe="1h",
-                timestamp=now.replace(minute=0, second=0, microsecond=0),
-                open=100,
-                high=102,
-                low=99,
-                close=101,
-                volume=1000,
-                vwap=101,
-                trade_count=10,
-            ),
-            Candle(
-                asset_class="stock",
-                venue="alpaca",
-                source="test",
-                symbol="AAPL",
-                timeframe="1h",
-                timestamp=now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1),
-                open=101,
-                high=104,
-                low=100,
-                close=103,
-                volume=1200,
-                vwap=103,
-                trade_count=12,
-            ),
+            Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="1h", timestamp=now.replace(minute=0, second=0, microsecond=0), open=100, high=102, low=99, close=101, volume=1000, vwap=101, trade_count=10),
+            Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="1h", timestamp=now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1), open=101, high=104, low=100, close=103, volume=1200, vwap=103, trade_count=12),
         ])
-        db.add(
-            FeatureSyncState(
-                asset_class="stock",
-                venue="alpaca",
-                symbol="AAPL",
-                timeframe="1h",
-                last_computed_at=now,
-                last_candle_at=now,
-                feature_count=20,
-                last_status="computed",
-                last_error=None,
-            )
-        )
+        db.add(FeatureSyncState(asset_class="stock", venue="alpaca", symbol="AAPL", timeframe="1h", last_computed_at=now, last_candle_at=now, feature_count=20, last_status="computed", last_error=None))
         db.add(Setting(key="controls.kill_switch_enabled", value="false", value_type="bool"))
         db.add(SystemEvent(event_type="control.refresh", severity="info", message="refresh complete", event_source="test"))
         db.commit()
@@ -156,57 +67,23 @@ def test_phase13_control_snapshot_and_toggle(client) -> None:
 def test_phase13_run_once_controls_are_wired(client, monkeypatch) -> None:
     from backend.app.api.routes import controls as controls_route
 
-    monkeypatch.setattr(
-        controls_route.UniverseWorker,
-        "resolve_stock_universe",
-        lambda self, force=False: SimpleNamespace(asset_class="stock", source="ai", symbols=("AAPL",)),
-    )
-    monkeypatch.setattr(
-        controls_route.UniverseWorker,
-        "resolve_crypto_universe",
-        lambda self, force=False: SimpleNamespace(asset_class="crypto", source="static", symbols=("BTCUSD",)),
-    )
-    monkeypatch.setattr(
-        controls_route.SingleCandleWorker,
-        "sync_stock_backfill",
-        lambda self, symbols, timeframe: SimpleNamespace(requested_symbols=tuple(symbols), upserted_bars=25, skipped_reason=None),
-    )
-    monkeypatch.setattr(
-        controls_route.SingleCandleWorker,
-        "sync_crypto_incremental",
-        lambda self, symbols, timeframe: SimpleNamespace(requested_symbols=tuple(symbols), upserted_bars=12, skipped_reason=None),
-    )
-    monkeypatch.setattr(
-        controls_route.RegimeWorker,
-        "build_stock_regime",
-        lambda self, timeframe=None: SimpleNamespace(regime="bull", entry_policy="full", symbol_count=8),
-    )
-    monkeypatch.setattr(
-        controls_route.FeatureWorker,
-        "build_stock_features",
-        lambda self, timeframe=None: SimpleNamespace(computed_snapshots=8),
-    )
-    monkeypatch.setattr(
-        controls_route.StrategyWorker,
-        "build_stock_candidates",
-        lambda self, timeframe=None: SimpleNamespace(evaluated_rows=8, ready_rows=3, blocked_rows=5),
-    )
+    monkeypatch.setattr(controls_route.UniverseWorker, "resolve_stock_universe", lambda self, force=False: SimpleNamespace(asset_class="stock", source="ai", symbols=("AAPL",)))
+    monkeypatch.setattr(controls_route.UniverseWorker, "resolve_crypto_universe", lambda self, force=False: SimpleNamespace(asset_class="crypto", source="static", symbols=("BTCUSD",)))
+    monkeypatch.setattr(controls_route.SingleCandleWorker, "sync_stock_backfill", lambda self, symbols, timeframe: SimpleNamespace(requested_symbols=tuple(symbols), upserted_bars=25, skipped_reason=None))
+    monkeypatch.setattr(controls_route.SingleCandleWorker, "sync_crypto_incremental", lambda self, symbols, timeframe: SimpleNamespace(requested_symbols=tuple(symbols), upserted_bars=12, skipped_reason=None))
+    monkeypatch.setattr(controls_route.RegimeWorker, "build_stock_regime", lambda self, timeframe=None: SimpleNamespace(regime="bull", entry_policy="full", symbol_count=8))
+    monkeypatch.setattr(controls_route.FeatureWorker, "build_stock_features", lambda self, timeframe=None: SimpleNamespace(computed_snapshots=8))
+    monkeypatch.setattr(controls_route.StrategyWorker, "build_stock_candidates", lambda self, timeframe=None: SimpleNamespace(evaluated_rows=8, ready_rows=3, blocked_rows=5))
 
     universe_response = client.post("/api/v1/controls/universe/run-once", json={"asset_class": "all"})
     assert universe_response.status_code == 200
     assert universe_response.json()["action"] == "refresh_universe"
 
-    backfill_response = client.post(
-        "/api/v1/controls/candles/backfill",
-        json={"asset_class": "stock", "symbols": ["AAPL"], "timeframe": "1h"},
-    )
+    backfill_response = client.post("/api/v1/controls/candles/backfill", json={"asset_class": "stock", "symbols": ["AAPL"], "timeframe": "1h"})
     assert backfill_response.status_code == 200
     assert backfill_response.json()["details"][0]["upserted_bars"] == 25
 
-    incremental_response = client.post(
-        "/api/v1/controls/candles/incremental",
-        json={"asset_class": "crypto", "symbols": ["BTCUSD"], "timeframe": "1h"},
-    )
+    incremental_response = client.post("/api/v1/controls/candles/incremental", json={"asset_class": "crypto", "symbols": ["BTCUSD"], "timeframe": "1h"})
     assert incremental_response.status_code == 200
     assert incremental_response.json()["details"][0]["upserted_bars"] == 12
 
@@ -221,3 +98,25 @@ def test_phase13_run_once_controls_are_wired(client, monkeypatch) -> None:
     flatten_response = client.post("/api/v1/controls/flatten/all", json={"engage_kill_switch": True})
     assert flatten_response.status_code == 200
     assert flatten_response.json()["status"] == "queued_manual_action"
+
+
+def test_phase13_controls_expand_to_configured_timeframes_when_unspecified(client, monkeypatch) -> None:
+    from backend.app.api.routes import controls as controls_route
+
+    seen_candle_timeframes: list[str] = []
+    seen_strategy_timeframes: list[str] = []
+
+    monkeypatch.setattr(controls_route, "get_settings", lambda: SimpleNamespace(stock_feature_timeframe_list=["1h", "15m", "5m", "1d"], crypto_feature_timeframe_list=["4h", "1h", "15m", "1d"], execution_kill_switch_enabled=False, default_mode="mixed", stock_execution_mode="paper", crypto_execution_mode="paper"))
+    monkeypatch.setattr(controls_route.SingleCandleWorker, "sync_stock_backfill", lambda self, symbols, timeframe: seen_candle_timeframes.append(timeframe) or SimpleNamespace(requested_symbols=tuple(symbols), upserted_bars=5, skipped_reason=None))
+    monkeypatch.setattr(controls_route.FeatureWorker, "build_stock_features", lambda self, timeframe=None: seen_strategy_timeframes.append(timeframe) or SimpleNamespace(computed_snapshots=8))
+    monkeypatch.setattr(controls_route.StrategyWorker, "build_stock_candidates", lambda self, timeframe=None: SimpleNamespace(evaluated_rows=8, ready_rows=3, blocked_rows=5))
+
+    backfill_response = client.post("/api/v1/controls/candles/backfill", json={"asset_class": "stock", "symbols": ["AAPL"]})
+    assert backfill_response.status_code == 200
+    assert seen_candle_timeframes == ["1h", "15m", "5m", "1d"]
+    assert [item["timeframe"] for item in backfill_response.json()["details"]] == ["1h", "15m", "5m", "1d"]
+
+    strategy_response = client.post("/api/v1/controls/strategy/run-once", json={"asset_class": "stock"})
+    assert strategy_response.status_code == 200
+    assert seen_strategy_timeframes == ["1h", "15m", "5m", "1d"]
+    assert [item["timeframe"] for item in strategy_response.json()["details"]] == ["1h", "15m", "5m", "1d"]

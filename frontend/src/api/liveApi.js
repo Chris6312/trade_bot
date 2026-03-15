@@ -15,10 +15,10 @@ export const API_BASE = `${DEFAULT_API_ORIGIN}/api/v1`;
 
 const CONTROL_MAP = {
   refresh_universe: { path: '/controls/universe/run-once', buildPayload: () => ({ asset_class: 'all', force: true }) },
-  backfill_candles: { path: '/controls/candles/backfill', buildPayload: () => ({ asset_class: 'all', timeframe: '1h', force: true }) },
-  sync_incremental_candles: { path: '/controls/candles/incremental', buildPayload: () => ({ asset_class: 'all', timeframe: '1h' }) },
-  recompute_regime: { path: '/controls/regime/run-once', buildPayload: () => ({ asset_class: 'all', timeframe: '1h', force: true }) },
-  refresh_strategies: { path: '/controls/strategy/run-once', buildPayload: () => ({ asset_class: 'all', timeframe: '1h', force: true }) },
+  backfill_candles: { path: '/controls/candles/backfill', buildPayload: () => ({ asset_class: 'all', force: true }) },
+  sync_incremental_candles: { path: '/controls/candles/incremental', buildPayload: () => ({ asset_class: 'all' }) },
+  recompute_regime: { path: '/controls/regime/run-once', buildPayload: () => ({ asset_class: 'all', force: true }) },
+  refresh_strategies: { path: '/controls/strategy/run-once', buildPayload: () => ({ asset_class: 'all', force: true }) },
   flatten_stocks: { path: '/controls/flatten/stock', buildPayload: () => ({ engage_kill_switch: true }) },
   flatten_crypto: { path: '/controls/flatten/crypto', buildPayload: () => ({ engage_kill_switch: true }) },
   flatten_all: { path: '/controls/flatten/all', buildPayload: () => ({ engage_kill_switch: true }) },
