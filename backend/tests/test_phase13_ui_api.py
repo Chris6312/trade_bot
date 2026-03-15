@@ -73,7 +73,10 @@ def test_phase13_run_once_controls_are_wired(client, monkeypatch) -> None:
     monkeypatch.setattr(controls_route.SingleCandleWorker, "sync_crypto_incremental", lambda self, symbols, timeframe: SimpleNamespace(requested_symbols=tuple(symbols), upserted_bars=12, skipped_reason=None))
     monkeypatch.setattr(controls_route.RegimeWorker, "build_stock_regime", lambda self, timeframe=None: SimpleNamespace(regime="bull", entry_policy="full", symbol_count=8))
     monkeypatch.setattr(controls_route.FeatureWorker, "build_stock_features", lambda self, timeframe=None: SimpleNamespace(computed_snapshots=8))
+    monkeypatch.setattr(controls_route.FeatureWorker, "build_crypto_features", lambda self, timeframe=None: SimpleNamespace(computed_snapshots=6))
+    monkeypatch.setattr(controls_route.RegimeWorker, "build_crypto_regime", lambda self, timeframe=None: SimpleNamespace(regime="bull", entry_policy="full", symbol_count=6))
     monkeypatch.setattr(controls_route.StrategyWorker, "build_stock_candidates", lambda self, timeframe=None: SimpleNamespace(evaluated_rows=8, ready_rows=3, blocked_rows=5))
+    monkeypatch.setattr(controls_route.StrategyWorker, "build_crypto_candidates", lambda self, timeframe=None: SimpleNamespace(evaluated_rows=6, ready_rows=2, blocked_rows=4))
 
     universe_response = client.post("/api/v1/controls/universe/run-once", json={"asset_class": "all"})
     assert universe_response.status_code == 200
@@ -109,6 +112,7 @@ def test_phase13_controls_expand_to_configured_timeframes_when_unspecified(clien
     monkeypatch.setattr(controls_route, "get_settings", lambda: SimpleNamespace(stock_feature_timeframe_list=["1h", "15m", "5m", "1d"], crypto_feature_timeframe_list=["4h", "1h", "15m", "1d"], execution_kill_switch_enabled=False, default_mode="mixed", stock_execution_mode="paper", crypto_execution_mode="paper"))
     monkeypatch.setattr(controls_route.SingleCandleWorker, "sync_stock_backfill", lambda self, symbols, timeframe: seen_candle_timeframes.append(timeframe) or SimpleNamespace(requested_symbols=tuple(symbols), upserted_bars=5, skipped_reason=None))
     monkeypatch.setattr(controls_route.FeatureWorker, "build_stock_features", lambda self, timeframe=None: seen_strategy_timeframes.append(timeframe) or SimpleNamespace(computed_snapshots=8))
+    monkeypatch.setattr(controls_route.RegimeWorker, "build_stock_regime", lambda self, timeframe=None: SimpleNamespace(regime="bull", entry_policy="full", symbol_count=8))
     monkeypatch.setattr(controls_route.StrategyWorker, "build_stock_candidates", lambda self, timeframe=None: SimpleNamespace(evaluated_rows=8, ready_rows=3, blocked_rows=5))
 
     backfill_response = client.post("/api/v1/controls/candles/backfill", json={"asset_class": "stock", "symbols": ["AAPL"]})

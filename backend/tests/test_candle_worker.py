@@ -158,3 +158,46 @@ def test_crypto_incremental_waits_until_next_close_when_latest_released_bar_is_a
     assert summary.upserted_bars == 0
     assert summary.skipped_reason == "awaiting_next_close"
     assert kraken_adapter.calls == []
+
+
+def test_stock_incremental_5m_waits_until_bar_close_plus_20_seconds(db_session: Session, worker_settings: Settings) -> None:
+    existing_bar_time = datetime(2026, 3, 13, 14, 55, tzinfo=UTC)
+    persist_ohlcv_batch(
+        db_session,
+        writer_name=SINGLE_CANDLE_WRITER,
+        asset_class="stock",
+        venue="alpaca",
+        source="alpaca_stock_ohlcv",
+        bars=[_bar("AAPL", "5m", existing_bar_time, "211.90")],
+        synced_at=existing_bar_time + timedelta(minutes=5),
+    )
+    alpaca_adapter = FakeAlpacaStockAdapter({"AAPL": []})
+    worker = SingleCandleWorker(db_session, registry=FakeRegistry(alpaca_adapter=alpaca_adapter), settings=worker_settings)
+
+    early = worker.sync_stock_incremental(symbols=["AAPL"], timeframe="5m", now=datetime(2026, 3, 13, 15, 0, 19, tzinfo=UTC))
+    assert early.upserted_bars == 0
+    assert early.skipped_reason == "awaiting_next_close"
+    assert alpaca_adapter.calls == []
+
+    incremental_adapter = FakeAlpacaStockAdapter({
+        "AAPL": [
+            _bar("AAPL", "5m", existing_bar_time, "211.90"),
+            _bar("AAPL", "5m", datetime(2026, 3, 13, 15, 0, tzinfo=UTC), "212.10"),
+        ]
+    })
+    ready_worker = SingleCandleWorker(db_session, registry=FakeRegistry(alpaca_adapter=incremental_adapter), settings=worker_settings)
+    ready = ready_worker.sync_stock_incremental(symbols=["AAPL"], timeframe="5m", now=datetime(2026, 3, 13, 15, 5, 20, tzinfo=UTC))
+    assert ready.upserted_bars == 2
+    assert incremental_adapter.calls[0]["end"] == "2026-03-13T15:00:00Z"
+
+
+def test_stock_incremental_allows_first_session_bar_after_release_delay(db_session: Session, worker_settings: Settings) -> None:
+    alpaca_adapter = FakeAlpacaStockAdapter({
+        "AAPL": [
+            _bar("AAPL", "5m", datetime(2026, 3, 13, 13, 30, tzinfo=UTC), "211.90"),
+        ]
+    })
+    worker = SingleCandleWorker(db_session, registry=FakeRegistry(alpaca_adapter=alpaca_adapter), settings=worker_settings)
+    summary = worker.sync_stock_incremental(symbols=["AAPL"], timeframe="5m", now=datetime(2026, 3, 13, 13, 35, 20, tzinfo=UTC))
+    assert summary.upserted_bars == 1
+    assert alpaca_adapter.calls[0]["end"] == "2026-03-13T13:30:00Z"

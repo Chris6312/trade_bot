@@ -15,10 +15,16 @@ _session_factory: sessionmaker[Session] | None = None
 def _engine_kwargs(database_url: str) -> dict[str, object]:
     kwargs: dict[str, object] = {
         "pool_pre_ping": True,
+        "pool_size": 10,
+        "max_overflow": 5,
+        "pool_timeout": 30,
         "future": True,
     }
 
     if database_url.startswith("sqlite"):
+        kwargs.pop("pool_size", None)
+        kwargs.pop("max_overflow", None)
+        kwargs.pop("pool_timeout", None)
         kwargs["connect_args"] = {"check_same_thread": False}
 
     return kwargs
@@ -53,6 +59,9 @@ def get_db_session() -> Generator[Session, None, None]:
     db = get_session_factory()()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 

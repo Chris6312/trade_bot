@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -35,6 +36,9 @@ class PublicTradingAdapter:
         self._token_validity_minutes = settings.public_access_token_validity_minutes
         self._timeout_seconds = settings.broker_request_timeout_seconds
         self._transport = transport
+        self._cached_token: str | None = None
+        self._token_expires_at: float = 0.0
+        self._authenticated_api_client: JsonApiClient | None = None
         self._client = JsonApiClient(
             base_url=self._base_url,
             label="public_trading",
@@ -43,6 +47,9 @@ class PublicTradingAdapter:
         )
 
     def close(self) -> None:
+        if self._authenticated_api_client is not None:
+            self._authenticated_api_client.close()
+            self._authenticated_api_client = None
         self._client.close()
 
     def get_account_state(self) -> AccountState:
@@ -157,6 +164,10 @@ class PublicTradingAdapter:
         return cleaned or None
 
     def _authenticated_client(self) -> JsonApiClient:
+        now = time.monotonic()
+        if self._authenticated_api_client is not None and self._cached_token and now < self._token_expires_at:
+            return self._authenticated_api_client
+
         token_payload = self._client.request_json(
             "POST",
             "/userapiauthservice/personal/access-tokens",
@@ -169,13 +180,19 @@ class PublicTradingAdapter:
         if not isinstance(access_token, str) or not access_token:
             raise AdapterParseError("Public access token response missing accessToken")
 
-        return JsonApiClient(
+        if self._authenticated_api_client is not None:
+            self._authenticated_api_client.close()
+
+        self._cached_token = access_token
+        self._token_expires_at = now + max(self._token_validity_minutes * 60 * 0.80, 1.0)
+        self._authenticated_api_client = JsonApiClient(
             base_url=self._base_url,
             label="public_trading",
             default_headers={"Authorization": f"Bearer {access_token}"},
             timeout_seconds=self._timeout_seconds,
             transport=self._transport,
         )
+        return self._authenticated_api_client
 
 
     def _parse_open_order(self, payload: dict[str, Any]) -> OpenOrder:

@@ -28,7 +28,7 @@ def get_runtime_snapshot(db: Session = Depends(get_db)) -> RuntimeSettingsSnapsh
 
 @router.post("/batch", response_model=list[SettingRead])
 def put_settings_batch(payload: SettingBatchUpsertRequest, db: Session = Depends(get_db)) -> list[SettingRead]:
-    rows: list[SettingRead] = []
+    records = []
     for item in payload.items:
         record = upsert_setting(
             db,
@@ -38,8 +38,11 @@ def put_settings_batch(payload: SettingBatchUpsertRequest, db: Session = Depends
             description=item.description,
             is_secret=item.is_secret,
         )
-        rows.append(SettingRead.model_validate(record))
-    return rows
+        records.append(record)
+    db.commit()
+    for record in records:
+        db.refresh(record)
+    return [SettingRead.model_validate(record) for record in records]
 
 
 @router.get("/{key}", response_model=SettingRead)
@@ -62,4 +65,6 @@ def put_setting(key: str, payload: SettingUpsert, db: Session = Depends(get_db))
         description=payload.description,
         is_secret=payload.is_secret,
     )
+    db.commit()
+    db.refresh(record)
     return SettingRead.model_validate(record)

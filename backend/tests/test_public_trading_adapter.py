@@ -47,3 +47,41 @@ def test_public_account_state_uses_portfolio_v2(monkeypatch) -> None:
     assert str(state.equity) == "498.80"
     assert str(state.cash) == "221.55"
     assert state.positions[0].symbol == "NVDA"
+
+
+def test_public_adapter_reuses_cached_access_token_within_ttl(monkeypatch) -> None:
+    monkeypatch.setenv("PUBLIC_API_SECRET", "public-secret")
+    monkeypatch.setenv("PUBLIC_API_BASE_URL", "https://api.public.test")
+    monkeypatch.setenv("PUBLIC_ACCOUNT_ID", "pub-acct-1")
+    get_settings.cache_clear()
+
+    auth_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal auth_calls
+        if request.url.path == "/userapiauthservice/personal/access-tokens":
+            auth_calls += 1
+            return httpx.Response(200, json={"accessToken": "token-123"})
+        if request.url.path == "/userapigateway/trading/pub-acct-1/portfolio/v2":
+            return httpx.Response(
+                200,
+                json={
+                    "accountId": "pub-acct-1",
+                    "buyingPower": {"availableToTrade": "100.00", "amount": "100.00"},
+                    "equity": [
+                        {"label": "total", "amount": "500.00"},
+                        {"label": "cash", "amount": "100.00"},
+                    ],
+                    "positions": [],
+                    "orders": [],
+                },
+            )
+        if request.url.path == "/userapigateway/trading/pub-acct-1/order":
+            return httpx.Response(200, json={"orderId": "ord-1", "status": "submitted"})
+        raise AssertionError(f"Unexpected path {request.url.path}")
+
+    adapter = PublicTradingAdapter(get_settings(), transport=httpx.MockTransport(handler))
+    adapter.get_account_state()
+    adapter.list_open_orders()
+
+    assert auth_calls == 1

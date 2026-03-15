@@ -41,8 +41,7 @@ def upsert_setting(
         record.description = description
         record.is_secret = is_secret
 
-    db.commit()
-    db.refresh(record)
+    db.flush()
     return record
 
 

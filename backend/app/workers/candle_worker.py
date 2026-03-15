@@ -126,24 +126,23 @@ class SingleCandleWorker:
         if timeframe == "1d":
             return False
         local_close = close_at.astimezone(self._nyse_tz)
-        return local_close <= local_close.replace(hour=9, minute=30, second=0, microsecond=0)
+        return local_close < local_close.replace(hour=9, minute=30, second=0, microsecond=0)
 
     def _has_incremental_gap(self, *, asset_class: str, symbols: list[str], timeframe: str, close_at: datetime) -> bool:
-        interval = timeframe_to_timedelta(timeframe)
         for symbol in symbols:
             state = get_sync_state(self.db, asset_class=asset_class, symbol=symbol, timeframe=timeframe)
             if state is None or state.last_candle_at is None:
                 return True
-            if self._coerce_datetime(state.last_candle_at) + interval < close_at:
+            if self._coerce_datetime(state.last_candle_at) < close_at:
                 return True
         return False
 
     def _latest_released_close(self, *, asset_class: str, timeframe: str, at: datetime) -> datetime | None:
         timezone = self._nyse_tz if asset_class == "stock" else UTC
+        interval = timeframe_to_timedelta(timeframe)
         local_time = at.astimezone(timezone)
-        boundary = self._floor_close_boundary(local_time, timeframe)
-        if local_time < (boundary + INCREMENTAL_RELEASE_DELAY):
-            boundary -= timeframe_to_timedelta(timeframe)
+        release_reference = local_time - INCREMENTAL_RELEASE_DELAY
+        boundary = self._floor_close_boundary(release_reference, timeframe) - interval
         return boundary.astimezone(UTC)
 
     @staticmethod

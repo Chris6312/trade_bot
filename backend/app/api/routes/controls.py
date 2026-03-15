@@ -120,16 +120,19 @@ def sync_incremental_candles(payload: ControlActionRequest, db: Session = Depend
 @router.post("/regime/run-once", response_model=ControlActionResponse)
 def recompute_regime(payload: ControlActionRequest, db: Session = Depends(get_db)) -> ControlActionResponse:
     settings = get_settings()
+    feature_worker = FeatureWorker(db, settings=settings)
     worker = RegimeWorker(db, settings=settings)
     details: list[dict[str, object]] = []
     if payload.asset_class in {"all", "stock"}:
         for timeframe in _resolve_requested_timeframes(settings, asset_class="stock", requested_timeframe=payload.timeframe):
+            feature_summary = feature_worker.build_stock_features(timeframe=timeframe)
             summary = worker.build_stock_regime(timeframe=timeframe)
-            details.append({"asset_class": "stock", "timeframe": timeframe, "regime": summary.regime, "entry_policy": summary.entry_policy, "symbol_count": summary.symbol_count})
+            details.append({"asset_class": "stock", "timeframe": timeframe, "computed_features": feature_summary.computed_snapshots, "regime": summary.regime, "entry_policy": summary.entry_policy, "symbol_count": summary.symbol_count})
     if payload.asset_class in {"all", "crypto"}:
         for timeframe in _resolve_requested_timeframes(settings, asset_class="crypto", requested_timeframe=payload.timeframe):
+            feature_summary = feature_worker.build_crypto_features(timeframe=timeframe)
             summary = worker.build_crypto_regime(timeframe=timeframe)
-            details.append({"asset_class": "crypto", "timeframe": timeframe, "regime": summary.regime, "entry_policy": summary.entry_policy, "symbol_count": summary.symbol_count})
+            details.append({"asset_class": "crypto", "timeframe": timeframe, "computed_features": feature_summary.computed_snapshots, "regime": summary.regime, "entry_policy": summary.entry_policy, "symbol_count": summary.symbol_count})
     _create_event(db, event_type="control.regime_run", severity="info", message="Regime recompute executed.", payload={"asset_class": payload.asset_class, "timeframe": payload.timeframe})
     return ControlActionResponse(action="recompute_regime", status="completed", message="Regime recompute completed.", details=details, created_at=datetime.now(UTC))
 
@@ -138,18 +141,21 @@ def recompute_regime(payload: ControlActionRequest, db: Session = Depends(get_db
 def refresh_strategies(payload: ControlActionRequest, db: Session = Depends(get_db)) -> ControlActionResponse:
     settings = get_settings()
     feature_worker = FeatureWorker(db, settings=settings)
+    regime_worker = RegimeWorker(db, settings=settings)
     strategy_worker = StrategyWorker(db, settings=settings)
     details: list[dict[str, object]] = []
     if payload.asset_class in {"all", "stock"}:
         for timeframe in _resolve_requested_timeframes(settings, asset_class="stock", requested_timeframe=payload.timeframe):
             feature_summary = feature_worker.build_stock_features(timeframe=timeframe)
+            regime_summary = regime_worker.build_stock_regime(timeframe=timeframe)
             strategy_summary = strategy_worker.build_stock_candidates(timeframe=timeframe)
-            details.append({"asset_class": "stock", "timeframe": timeframe, "computed_features": feature_summary.computed_snapshots, "evaluated_rows": strategy_summary.evaluated_rows, "ready_rows": strategy_summary.ready_rows, "blocked_rows": strategy_summary.blocked_rows})
+            details.append({"asset_class": "stock", "timeframe": timeframe, "computed_features": feature_summary.computed_snapshots, "regime": regime_summary.regime, "entry_policy": regime_summary.entry_policy, "evaluated_rows": strategy_summary.evaluated_rows, "ready_rows": strategy_summary.ready_rows, "blocked_rows": strategy_summary.blocked_rows})
     if payload.asset_class in {"all", "crypto"}:
         for timeframe in _resolve_requested_timeframes(settings, asset_class="crypto", requested_timeframe=payload.timeframe):
             feature_summary = feature_worker.build_crypto_features(timeframe=timeframe)
+            regime_summary = regime_worker.build_crypto_regime(timeframe=timeframe)
             strategy_summary = strategy_worker.build_crypto_candidates(timeframe=timeframe)
-            details.append({"asset_class": "crypto", "timeframe": timeframe, "computed_features": feature_summary.computed_snapshots, "evaluated_rows": strategy_summary.evaluated_rows, "ready_rows": strategy_summary.ready_rows, "blocked_rows": strategy_summary.blocked_rows})
+            details.append({"asset_class": "crypto", "timeframe": timeframe, "computed_features": feature_summary.computed_snapshots, "regime": regime_summary.regime, "entry_policy": regime_summary.entry_policy, "evaluated_rows": strategy_summary.evaluated_rows, "ready_rows": strategy_summary.ready_rows, "blocked_rows": strategy_summary.blocked_rows})
     _create_event(db, event_type="control.strategy_run", severity="info", message="Strategy refresh executed.", payload={"asset_class": payload.asset_class, "timeframe": payload.timeframe})
     return ControlActionResponse(action="refresh_strategies", status="completed", message="Strategy refresh completed.", details=details, created_at=datetime.now(UTC))
 

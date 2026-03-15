@@ -101,3 +101,19 @@ def test_stop_bot_engages_kill_switch_and_stops_cleanly() -> None:
     assert kill_switch_index < frontend_stop_index < backend_stop_index < down_index
     assert "Start-Sleep -Seconds $DrainSeconds" in script
     assert "Remove-Item $statePath -Force" in script
+
+
+def test_start_bot_primes_worker_pipeline_before_frontend() -> None:
+    script = _read_text(_script_path("Start-Bot.ps1"))
+
+    clear_index = script.index(
+        "Clear-KillSwitchIfNeeded -BackendPort $backendPort -ApiPrefix $apiPrefix -KeepKillSwitchEnabled:$KeepKillSwitchEnabled"
+    )
+    pipeline_index = script.index("Invoke-StartupPipeline -BackendPort $backendPort -ApiPrefix $apiPrefix")
+    frontend_step_index = script.index("Write-Host '4/5 Starting frontend...'")
+
+    assert clear_index < pipeline_index < frontend_step_index
+    assert "/controls/universe/run-once" in script
+    assert "/controls/candles/backfill" in script
+    assert "/controls/regime/run-once" in script
+    assert "/controls/strategy/run-once" in script

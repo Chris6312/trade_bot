@@ -783,7 +783,10 @@ def _snapshot_pnl_pct(snapshot: AccountSnapshot | None) -> float | None:
     if snapshot is None or snapshot.equity is None or float(snapshot.equity) <= 0:
         return None
     pnl = float(snapshot.realized_pnl or 0) + float(snapshot.unrealized_pnl or 0)
-    return pnl / float(snapshot.equity)
+    starting_equity = float(snapshot.equity) - pnl
+    if starting_equity <= 0:
+        return None
+    return pnl / starting_equity
 
 
 def _upsert_risk_sync_state(

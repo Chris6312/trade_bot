@@ -73,4 +73,4 @@ def get_current_position_sync_state(
 
 def _validate_asset_class(asset_class: str) -> None:
     if asset_class not in VALID_ASSET_CLASSES:
-        raise HTTPException(status_code=404, detail="Asset class not supported")
+        raise HTTPException(status_code=422, detail=f"Invalid asset class: {asset_class}")

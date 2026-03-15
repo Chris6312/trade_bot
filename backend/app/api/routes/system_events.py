@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_db
@@ -17,10 +18,17 @@ def list_system_events(limit: int = 100, severity: str | None = None, db: Sessio
     return [SystemEventRead.model_validate(row) for row in rows]
 
 
-@router.post("", response_model=SystemEventRead, status_code=201)
+@router.post("", response_model=SystemEventRead, status_code=status.HTTP_201_CREATED)
 def create_system_event(payload: SystemEventCreate, db: Session = Depends(get_db)) -> SystemEventRead:
-    record = SystemEvent(**payload.model_dump())
-    db.add(record)
-    db.commit()
-    db.refresh(record)
-    return SystemEventRead.model_validate(record)
+    try:
+        record = SystemEvent(**payload.model_dump())
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        return SystemEventRead.model_validate(record)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create system event. Database transaction rolled back.",
+        ) from exc

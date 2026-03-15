@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.db.base import Base
 from backend.app.db.session import get_session_factory
 from backend.app.models.core import AccountSnapshot, FeatureSnapshot, Setting, StrategySnapshot
-from backend.app.services.risk_service import get_risk_sync_state, list_current_risk_snapshots
+from backend.app.services.risk_service import _snapshot_pnl_pct, get_risk_sync_state, list_current_risk_snapshots
 from backend.app.workers.risk_worker import RiskWorker
 
 
@@ -171,7 +171,7 @@ def test_risk_engine_blocks_new_crypto_entries_when_crypto_breaker_is_hit(db_ses
 
 
 def test_risk_engine_blocks_new_entries_when_total_account_breaker_is_hit(db_session: Session) -> None:
-    _seed_total_account(db_session, equity=1000, cash=1000, realized_pnl=-50, unrealized_pnl=-30)
+    _seed_total_account(db_session, equity=1000, cash=1000, realized_pnl=-55, unrealized_pnl=-30)
     _seed_asset_account(db_session, asset_class="stock", equity=1000, cash=1000)
     _seed_feature(db_session, asset_class="stock", symbol="AAPL", close=100, atr=0.2)
     _seed_strategy(db_session, asset_class="stock", symbol="AAPL", strategy_name="trend_pullback_long")
@@ -382,3 +382,19 @@ def test_risk_api_returns_empty_list_when_no_current_rows(client) -> None:
     response = client.get("/api/v1/risk/stock/current", params={"timeframe": "1h"})
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_snapshot_pnl_pct_uses_starting_equity() -> None:
+    snapshot = AccountSnapshot(
+        account_scope="total",
+        venue="combined",
+        mode="paper",
+        as_of=datetime(2026, 3, 14, 15, 45, tzinfo=UTC),
+        equity=Decimal("550"),
+        cash=Decimal("550"),
+        buying_power=Decimal("550"),
+        realized_pnl=Decimal("20"),
+        unrealized_pnl=Decimal("30"),
+    )
+
+    assert _snapshot_pnl_pct(snapshot) == pytest.approx(0.10, abs=1e-9)
