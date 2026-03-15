@@ -7,7 +7,12 @@ import httpx
 from backend.app.common.adapters.errors import AdapterParseError
 from backend.app.common.adapters.http import JsonApiClient
 from backend.app.common.adapters.models import OhlcvBar
-from backend.app.common.adapters.utils import alpaca_timeframe_value, parse_datetime, parse_decimal, parse_optional_decimal
+from backend.app.common.adapters.utils import (
+    alpaca_timeframe_value,
+    parse_datetime,
+    parse_decimal,
+    parse_optional_decimal,
+)
 from backend.app.core.config import Settings
 
 
@@ -19,6 +24,9 @@ class AlpacaStockOhlcvAdapter:
                 "APCA-API-KEY-ID": settings.alpaca_paper_key,
                 "APCA-API-SECRET-KEY": settings.alpaca_paper_secret,
             }
+
+        self._default_feed = (settings.alpaca_stock_data_feed or "iex").strip().lower()
+
         self._client = JsonApiClient(
             base_url=settings.alpaca_market_data_base_url,
             label="alpaca_stock_ohlcv",
@@ -51,8 +59,10 @@ class AlpacaStockOhlcvAdapter:
             params["end"] = end
         if limit is not None:
             params["limit"] = limit
-        if feed is not None:
-            params["feed"] = feed
+
+        resolved_feed = (feed or self._default_feed).strip().lower()
+        if resolved_feed:
+            params["feed"] = resolved_feed
 
         payload = self._client.request_json("GET", "/v2/stocks/bars", params=params)
         bars_payload = payload.get("bars")

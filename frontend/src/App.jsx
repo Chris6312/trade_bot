@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import './styles.css';
-import { API_BASE, executeControlAction, loadLiveSnapshot, saveSettings } from './api/liveApi';
+import { API_BASE, executeControlAction, fetchLiveRolloutChecklist, loadLiveSnapshot, runConnectionDiagnostics, saveSettingItems, saveSettings } from './api/liveApi';
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: '◫' },
@@ -62,6 +62,22 @@ const STOCK_PAPER_KEYS = new Set(['alpaca_paper_stock_enabled', 'paper_stock_ena
 const CRYPTO_LIVE_KEYS = new Set(['kraken_live_enabled', 'crypto_live_enabled', 'live_crypto_enabled']);
 const CRYPTO_PAPER_KEYS = new Set(['alpaca_paper_crypto_enabled', 'paper_crypto_enabled', 'crypto_paper_enabled']);
 
+const QUICK_SETTING_METADATA = {
+  'execution.default_mode': { valueType: 'string', description: 'Global execution mode' },
+  'execution.stock.mode': { valueType: 'string', description: 'Stock broker route mode' },
+  'execution.crypto.mode': { valueType: 'string', description: 'Crypto broker route mode' },
+  'controls.stock.trading_enabled': { valueType: 'bool', description: 'Stock trading enabled' },
+  'controls.crypto.trading_enabled': { valueType: 'bool', description: 'Crypto trading enabled' },
+};
+
+const QUICK_SETTING_LABELS = {
+  'execution.default_mode': 'Global execution mode',
+  'execution.stock.mode': 'Stock route',
+  'execution.crypto.mode': 'Crypto route',
+  'controls.stock.trading_enabled': 'Stock trading',
+  'controls.crypto.trading_enabled': 'Crypto trading',
+};
+
 function formatMoney(value) {
   if (value == null || Number.isNaN(Number(value))) return '—';
   return new Intl.NumberFormat('en-US', {
@@ -87,6 +103,21 @@ function formatTime(value) {
   if (!value) return '—';
   try {
     return new Date(value).toLocaleString();
+  } catch {
+    return String(value);
+  }
+}
+
+function formatCompactTime(value) {
+  if (!value) return '—';
+  try {
+    return new Date(value).toLocaleString([], {
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit',
+    });
   } catch {
     return String(value);
   }
@@ -180,6 +211,7 @@ function App() {
   const [settingsFilter, setSettingsFilter] = useState('all');
   const [settingsQuery, setSettingsQuery] = useState('');
   const [reviewOpen, setReviewOpen] = useState(false);
+  const importInputRef = useRef(null);
 
   const refresh = async ({ quiet = false } = {}) => {
     if (!quiet) setLoading(true);
@@ -230,6 +262,8 @@ function App() {
 
   const pageActions = PAGE_ACTIONS[page] || PAGE_ACTIONS.dashboard;
 
+  const settingsMap = useMemo(() => buildSettingMap(snapshot.settings), [snapshot.settings]);
+
   const filteredUniverse = useMemo(() => {
     const search = query.trim().toLowerCase();
     const filterRows = (rows) => rows.filter((row) => {
@@ -278,6 +312,24 @@ function App() {
     });
   }, [settingsFilter, settingsQuery, snapshot.settings]);
 
+  const defaultSettingValues = useMemo(() => ({
+    'execution.default_mode': snapshot.controlState.defaultMode || 'paper',
+    'execution.stock.mode': snapshot.controlState.stockMode || 'paper',
+    'execution.crypto.mode': snapshot.controlState.cryptoMode || 'paper',
+    'controls.stock.trading_enabled': Boolean(snapshot.controlState.stockTradingEnabled ?? true),
+    'controls.crypto.trading_enabled': Boolean(snapshot.controlState.cryptoTradingEnabled ?? true),
+  }), [snapshot.controlState]);
+
+  const summarizeCandleSync = (details = []) => {
+    if (!Array.isArray(details) || !details.length) return '';
+    return details.map((detail) => {
+      const asset = titleCase(detail.asset_class || 'asset');
+      if (detail.skipped_reason) return `${asset} ${String(detail.skipped_reason).replace(/_/g, ' ')}`;
+      if (detail.upserted_bars != null) return `${asset} ${detail.upserted_bars} bars`;
+      return asset;
+    }).join(' · ');
+  };
+
   const handleAction = async (action) => {
     if (action.key === 'refresh') {
       refresh();
@@ -289,6 +341,28 @@ function App() {
     }
     try {
       setBusyAction(action.key);
+
+      if (action.key === 'refresh_universe') {
+        await executeControlAction('refresh_universe', { source: 'frontend' });
+        const backfill = await executeControlAction('backfill_candles', { source: 'frontend' });
+        await executeControlAction('recompute_regime', { source: 'frontend' });
+        await executeControlAction('refresh_strategies', { source: 'frontend' });
+        const summary = summarizeCandleSync(backfill.details);
+        setNotice(summary ? `Universe pipeline refreshed. ${summary}.` : 'Universe pipeline refreshed.');
+        await refresh({ quiet: true });
+        return;
+      }
+
+      if (action.key === 'sync_incremental_candles') {
+        const incremental = await executeControlAction('sync_incremental_candles', { source: 'frontend' });
+        await executeControlAction('recompute_regime', { source: 'frontend' });
+        await executeControlAction('refresh_strategies', { source: 'frontend' });
+        const summary = summarizeCandleSync(incremental.details);
+        setNotice(summary ? `Incremental sync completed. ${summary}.` : 'Incremental sync completed.');
+        await refresh({ quiet: true });
+        return;
+      }
+
       await executeControlAction(action.key, { source: 'frontend' });
       setNotice(`${action.label} submitted.`);
       await refresh({ quiet: true });
@@ -333,6 +407,143 @@ function App() {
       await refresh({ quiet: true });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Settings save failed.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const applyQuickSettingChange = async (changedKey, changedValue) => {
+    const label = QUICK_SETTING_LABELS[changedKey] || titleCase(changedKey);
+    const isDangerous = /mode|trading_enabled/i.test(changedKey);
+    if (isDangerous) {
+      const confirmed = window.confirm(`Apply ${label} now? This writes directly to the backend settings.`);
+      if (!confirmed) return;
+    }
+
+    const base = {
+      ...settingsMap,
+      ...defaultSettingValues,
+    };
+    const next = { ...base, [changedKey]: changedValue };
+    applyRoutingExclusivity(next, changedKey, changedValue);
+
+    const diffEntries = Object.entries(next).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(base[key]));
+    if (!diffEntries.length) return;
+
+    const items = diffEntries.map(([key, value]) => {
+      const detail = snapshot.settings.find((item) => item.key === key) || QUICK_SETTING_METADATA[key] || {};
+      return {
+        key,
+        value,
+        valueType: detail.valueType || detail.value_type || 'string',
+        description: detail.description || null,
+        isSecret: Boolean(detail.raw?.is_secret),
+      };
+    });
+
+    try {
+      setBusyAction(`quick:${changedKey}`);
+      await saveSettingItems(items);
+      setNotice(`${label} updated.`);
+      await refresh({ quiet: true });
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : `Failed to update ${label}.`);
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const restoreFieldDefault = (setting) => {
+    if (setting.defaultValue == null) return;
+    updateDraftSetting(setting.key, setting.defaultValue);
+  };
+
+  const restoreCategoryDefaults = (settingsInCategory) => {
+    setDraftSettings((current) => {
+      const next = { ...current };
+      for (const setting of settingsInCategory) {
+        if (setting.defaultValue != null) {
+          next[setting.key] = setting.defaultValue;
+        }
+      }
+      return next;
+    });
+  };
+
+  const exportCurrentSettings = () => {
+    const payload = (snapshot.settings || []).map((setting) => ({
+      key: setting.key,
+      value: setting.value,
+      value_type: setting.valueType || setting.value_type || 'string',
+      description: setting.description || null,
+      is_secret: Boolean(setting.raw?.is_secret),
+    }));
+    const blob = new Blob([JSON.stringify({ exported_at: new Date().toISOString(), items: payload }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'trade_bot_settings_export.json';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    setNotice('Settings export downloaded.');
+  };
+
+  const importSettingsFile = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    try {
+      const raw = await file.text();
+      const parsed = JSON.parse(raw);
+      const itemsSource = Array.isArray(parsed) ? parsed : Array.isArray(parsed.items) ? parsed.items : [];
+      const items = itemsSource
+        .filter((item) => item && item.key != null)
+        .map((item) => ({
+          key: item.key,
+          value: item.value,
+          valueType: item.valueType || item.value_type || snapshot.settings.find((row) => row.key === item.key)?.valueType || QUICK_SETTING_METADATA[item.key]?.valueType || 'string',
+          description: item.description || snapshot.settings.find((row) => row.key === item.key)?.description || QUICK_SETTING_METADATA[item.key]?.description || null,
+          isSecret: Boolean(item.isSecret ?? item.is_secret ?? snapshot.settings.find((row) => row.key === item.key)?.raw?.is_secret),
+        }));
+
+      if (!items.length) throw new Error('Import file did not contain any settings items.');
+      const confirmed = window.confirm(`Import ${items.length} settings and save them to the backend now?`);
+      if (!confirmed) return;
+
+      setBusyAction('settings_import');
+      await saveSettingItems(items);
+      setNotice(`Imported ${items.length} setting${items.length === 1 ? '' : 's'}.`);
+      await refresh({ quiet: true });
+    } catch (importError) {
+      setError(importError instanceof Error ? importError.message : 'Settings import failed.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const runSettingsValidation = async () => {
+    try {
+      setBusyAction('validate_config');
+      const checklist = await fetchLiveRolloutChecklist();
+      setNotice(`Validation status: ${titleCase(checklist.overall_status)}. Live assets configured: ${checklist.live_asset_count}.`);
+    } catch (validationError) {
+      setError(validationError instanceof Error ? validationError.message : 'Config validation failed.');
+    } finally {
+      setBusyAction('');
+    }
+  };
+
+  const testConnections = async () => {
+    try {
+      setBusyAction('test_connections');
+      const diagnostics = await runConnectionDiagnostics();
+      const healthy = diagnostics.filter((item) => item.ok).length;
+      setNotice(`Connection diagnostics: ${healthy}/${diagnostics.length} checks answered.`);
+    } catch (diagnosticError) {
+      setError(diagnosticError instanceof Error ? diagnosticError.message : 'Connection diagnostics failed.');
     } finally {
       setBusyAction('');
     }
@@ -385,6 +596,8 @@ function App() {
         {page === 'settings' && (
           <SettingsPage
             settings={filteredSettings}
+            allSettings={snapshot.settings}
+            snapshot={snapshot}
             draftSettings={draftSettings}
             changedSettings={changedSettings}
             settingsFilter={settingsFilter}
@@ -394,10 +607,20 @@ function App() {
             onChange={updateDraftSetting}
             onReset={resetDraftSettings}
             onReview={() => setReviewOpen(true)}
+            onRestoreFieldDefault={restoreFieldDefault}
+            onRestoreCategoryDefaults={restoreCategoryDefaults}
+            onQuickSettingChange={applyQuickSettingChange}
+            onRunControlAction={handleAction}
+            onExportSettings={exportCurrentSettings}
+            onImportSettings={() => importInputRef.current?.click()}
+            onValidateConfig={runSettingsValidation}
+            onTestConnections={testConnections}
             busyAction={busyAction}
           />
         )}
       </main>
+
+      <input ref={importInputRef} type="file" accept="application/json" className="hidden-input" onChange={importSettingsFile} />
 
       <Drawer drawer={drawer} onClose={() => setDrawer(null)} />
 
@@ -568,8 +791,8 @@ function DashboardPage({ snapshot, positions, onOpen }) {
       <article className="panel-soft table-panel">
         <PanelHeader title="Recent activity" subtitle="Latest backend events" />
         <SimpleTable
-          columns={['Time', 'Level', 'Action', 'Message']}
-          rows={snapshot.logs.slice(0, 8).map((row) => [formatTime(row.timestamp), row.level, row.action, row.message])}
+          columns={['When', 'Event', 'Message']}
+          rows={snapshot.logs.slice(0, 8).map((row) => [formatCompactTime(row.timestamp), `${titleCase(row.level)} · ${titleCase(row.action)}`, row.message])}
           onRowClick={(index) => onOpen({ type: 'log', item: snapshot.logs[index] })}
           emptyText="No events returned yet."
         />
@@ -582,7 +805,7 @@ function PerformancePage({ snapshot, positions }) {
   const performance = snapshot.performance || {};
   return (
     <section className="page-grid performance-grid">
-      <div className="metric-strip">
+      <div className="metric-strip performance-metric-strip">
         <MetricCard label="Sharpe" value={performance.sharpe ?? '—'} tone="positive" />
         <MetricCard label="Sortino" value={performance.sortino ?? '—'} tone="violet" />
         <MetricCard label="Realized today" value={formatMoney(performance.realizedToday)} tone="neutral" />
@@ -743,7 +966,29 @@ function ActivityPage({ logs, onOpen, loading }) {
   );
 }
 
-function SettingsPage({ settings, draftSettings, changedSettings, settingsFilter, setSettingsFilter, settingsQuery, setSettingsQuery, onChange, onReset, onReview, busyAction }) {
+function SettingsPage({
+  settings,
+  allSettings,
+  snapshot,
+  draftSettings,
+  changedSettings,
+  settingsFilter,
+  setSettingsFilter,
+  settingsQuery,
+  setSettingsQuery,
+  onChange,
+  onReset,
+  onReview,
+  onRestoreFieldDefault,
+  onRestoreCategoryDefaults,
+  onQuickSettingChange,
+  onRunControlAction,
+  onExportSettings,
+  onImportSettings,
+  onValidateConfig,
+  onTestConnections,
+  busyAction,
+}) {
   const grouped = SETTINGS_GROUPS.map((group) => ({
     group,
     rows: settings.filter((item) => item.category === group),
@@ -754,8 +999,8 @@ function SettingsPage({ settings, draftSettings, changedSettings, settingsFilter
       <article className="panel-glass settings-toolbar">
         <div>
           <div className="eyebrow">Settings search</div>
-          <h3>Staged settings editor</h3>
-          <div className="subtle">Changes stay local until you review and save.</div>
+          <h3>Backend-wired settings command deck</h3>
+          <div className="subtle">Dangerous runtime actions route through backend endpoints. Settings edits stay staged until you save.</div>
         </div>
         <div className="topbar-controls">
           <input
@@ -770,6 +1015,16 @@ function SettingsPage({ settings, draftSettings, changedSettings, settingsFilter
               <option key={group} value={group}>{group}</option>
             ))}
           </select>
+          <button type="button" className="action-button" onClick={onExportSettings}>Export Settings</button>
+          <button type="button" className="action-button" onClick={onImportSettings} disabled={busyAction === 'settings_import'}>
+            {busyAction === 'settings_import' ? 'Importing…' : 'Import Settings'}
+          </button>
+          <button type="button" className="action-button" onClick={onTestConnections} disabled={busyAction === 'test_connections'}>
+            {busyAction === 'test_connections' ? 'Testing…' : 'Test Connection'}
+          </button>
+          <button type="button" className="action-button" onClick={onValidateConfig} disabled={busyAction === 'validate_config'}>
+            {busyAction === 'validate_config' ? 'Validating…' : 'Validate Config'}
+          </button>
           <button type="button" className="action-button" onClick={onReset}>Cancel changes</button>
           <button type="button" className="action-button" disabled={!Object.keys(changedSettings).length || busyAction === 'save_settings'} onClick={onReview}>
             Review and Save
@@ -777,11 +1032,27 @@ function SettingsPage({ settings, draftSettings, changedSettings, settingsFilter
         </div>
       </article>
 
-      {renderRoutingBanner(settings, draftSettings)}
+      <SettingsCommandDeck
+        snapshot={snapshot}
+        allSettings={allSettings}
+        busyAction={busyAction}
+        onQuickSettingChange={onQuickSettingChange}
+        onRunControlAction={onRunControlAction}
+      />
 
-      {grouped.map(({ group, rows }) => (
+      {renderRoutingBanner(allSettings, draftSettings)}
+
+      {grouped.length ? grouped.map(({ group, rows }) => (
         <article key={group} className="panel-soft settings-group">
-          <PanelHeader title={group} subtitle={`${rows.length} live setting${rows.length === 1 ? '' : 's'}`} />
+          <PanelHeader
+            title={group}
+            subtitle={`${rows.length} live setting${rows.length === 1 ? '' : 's'}`}
+            action={(
+              <button type="button" className="action-button compact" onClick={() => onRestoreCategoryDefaults(rows)}>
+                Restore category defaults
+              </button>
+            )}
+          />
           <div className="settings-list">
             {rows.map((setting) => (
               <SettingRow
@@ -790,17 +1061,150 @@ function SettingsPage({ settings, draftSettings, changedSettings, settingsFilter
                 value={draftSettings[setting.key]}
                 dirty={Object.prototype.hasOwnProperty.call(changedSettings, setting.key)}
                 onChange={onChange}
+                onRestoreDefault={onRestoreFieldDefault}
               />
             ))}
           </div>
         </article>
-      ))}
+      )) : (
+        <article className="panel-soft settings-group">
+          <PanelHeader title="No matching settings" subtitle="This category is still running on defaults or your search filtered everything out." />
+          <div className="subtle">Pick another category or clear the search box to reveal the full settings vault.</div>
+        </article>
+      )}
     </section>
   );
 }
 
-function SettingRow({ setting, value, dirty, onChange }) {
+function SettingsCommandDeck({ snapshot, allSettings, busyAction, onQuickSettingChange, onRunControlAction }) {
+  const controls = snapshot.controlState || {};
+  const hasSetting = (key) => allSettings.some((item) => item.key === key);
+  const canToggleStocks = hasSetting('controls.stock.trading_enabled') || controls.stockTradingEnabled != null;
+  const canToggleCrypto = hasSetting('controls.crypto.trading_enabled') || controls.cryptoTradingEnabled != null;
+
+  return (
+    <section className="settings-command-grid">
+      <article className="panel-soft command-card">
+        <PanelHeader title="Execution routes" subtitle="Immediate backend write for route mode controls" />
+        <div className="command-stack">
+          <ModeButtonRow
+            label="Global"
+            value={controls.defaultMode || 'paper'}
+            busy={busyAction.startsWith('quick:execution.default_mode')}
+            onSelect={(value) => onQuickSettingChange('execution.default_mode', value)}
+            options={[
+              { value: 'paper', label: 'Paper' },
+              { value: 'mixed', label: 'Mixed' },
+              { value: 'live', label: 'Live' },
+            ]}
+          />
+          <ModeButtonRow
+            label="Stocks"
+            value={controls.stockMode || 'paper'}
+            busy={busyAction.startsWith('quick:execution.stock.mode')}
+            onSelect={(value) => onQuickSettingChange('execution.stock.mode', value)}
+          />
+          <ModeButtonRow
+            label="Crypto"
+            value={controls.cryptoMode || 'paper'}
+            busy={busyAction.startsWith('quick:execution.crypto.mode')}
+            onSelect={(value) => onQuickSettingChange('execution.crypto.mode', value)}
+          />
+        </div>
+      </article>
+
+      <article className="panel-soft command-card">
+        <PanelHeader title="Trading enablement" subtitle="Per-asset trading gates saved through backend settings" />
+        <div className="command-stack">
+          {canToggleStocks ? (
+            <QuickToggleRow
+              label="Stock trading"
+              enabled={Boolean(controls.stockTradingEnabled ?? true)}
+              busy={busyAction.startsWith('quick:controls.stock.trading_enabled')}
+              onToggle={() => onQuickSettingChange('controls.stock.trading_enabled', !Boolean(controls.stockTradingEnabled ?? true))}
+            />
+          ) : null}
+          {canToggleCrypto ? (
+            <QuickToggleRow
+              label="Crypto trading"
+              enabled={Boolean(controls.cryptoTradingEnabled ?? true)}
+              busy={busyAction.startsWith('quick:controls.crypto.trading_enabled')}
+              onToggle={() => onQuickSettingChange('controls.crypto.trading_enabled', !Boolean(controls.cryptoTradingEnabled ?? true))}
+            />
+          ) : null}
+          <div className="subtle">Kraken live vs Alpaca crypto paper and Public live vs Alpaca stock paper remain mutually exclusive when route modes change.</div>
+        </div>
+      </article>
+
+      <article className="panel-soft command-card">
+        <PanelHeader title="Safety controls" subtitle="Direct backend control routes, confirmations included" />
+        <div className="command-stack">
+          <QuickActionButton
+            label={controls.killSwitchEnabled ? 'Disable Kill Switch' : 'Enable Kill Switch'}
+            busy={busyAction === 'toggle_kill_switch'}
+            dangerous
+            onClick={() => onRunControlAction({ key: 'toggle_kill_switch', label: controls.killSwitchEnabled ? 'Disable Kill Switch' : 'Enable Kill Switch', dangerous: true })}
+          />
+          <div className="button-cluster">
+            <QuickActionButton label="Flatten Stocks" busy={busyAction === 'flatten_stocks'} dangerous onClick={() => onRunControlAction({ key: 'flatten_stocks', label: 'Flatten Stocks', dangerous: true })} />
+            <QuickActionButton label="Flatten Crypto" busy={busyAction === 'flatten_crypto'} dangerous onClick={() => onRunControlAction({ key: 'flatten_crypto', label: 'Flatten Crypto', dangerous: true })} />
+            <QuickActionButton label="Flatten All" busy={busyAction === 'flatten_all'} dangerous onClick={() => onRunControlAction({ key: 'flatten_all', label: 'Flatten All', dangerous: true })} />
+          </div>
+        </div>
+      </article>
+    </section>
+  );
+}
+
+function ModeButtonRow({ label, value, onSelect, busy = false, options = [{ value: 'paper', label: 'Paper' }, { value: 'live', label: 'Live' }] }) {
+  return (
+    <div className="quick-row">
+      <div>
+        <div className="setting-label">{label}</div>
+        <div className="subtle">Current route: {titleCase(value)}</div>
+      </div>
+      <div className="button-cluster">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={`action-button compact ${value === option.value ? 'selected' : ''}`}
+            disabled={busy}
+            onClick={() => onSelect(option.value)}
+          >
+            {busy && value !== option.value ? 'Working…' : option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function QuickToggleRow({ label, enabled, onToggle, busy = false }) {
+  return (
+    <div className="quick-row">
+      <div>
+        <div className="setting-label">{label}</div>
+        <div className="subtle">{enabled ? 'Enabled in backend state' : 'Disabled in backend state'}</div>
+      </div>
+      <button type="button" className={`action-button compact ${enabled ? 'selected' : ''}`} disabled={busy} onClick={onToggle}>
+        {busy ? 'Working…' : enabled ? 'Disable' : 'Enable'}
+      </button>
+    </div>
+  );
+}
+
+function QuickActionButton({ label, onClick, busy = false, dangerous = false }) {
+  return (
+    <button type="button" className={`action-button compact ${dangerous ? 'danger' : ''}`} disabled={busy} onClick={onClick}>
+      {busy ? 'Working…' : label}
+    </button>
+  );
+}
+
+function SettingRow({ setting, value, dirty, onChange, onRestoreDefault }) {
   const inputId = `setting-${setting.key}`;
+  const hasDefault = setting.defaultValue != null;
   return (
     <div className={`setting-row ${dirty ? 'dirty' : ''}`}>
       <div>
@@ -815,22 +1219,27 @@ function SettingRow({ setting, value, dirty, onChange }) {
       </div>
 
       <div className="setting-input-wrap">
-        {setting.type === 'boolean' ? (
-          <label className="toggle-switch" htmlFor={inputId}>
-            <input id={inputId} type="checkbox" checked={normalizeBoolean(value)} onChange={(event) => onChange(setting.key, event.target.checked)} />
-            <span>{normalizeBoolean(value) ? 'Enabled' : 'Disabled'}</span>
-          </label>
-        ) : setting.type === 'mode' ? (
-          <select id={inputId} value={value ?? ''} onChange={(event) => onChange(setting.key, event.target.value)}>
-            {setting.options.map((option) => (
-              <option key={option.value} value={option.value}>{option.label}</option>
-            ))}
-          </select>
-        ) : setting.type === 'number' ? (
-          <input id={inputId} type="number" value={value ?? ''} onChange={(event) => onChange(setting.key, event.target.value === '' ? '' : Number(event.target.value))} />
-        ) : (
-          <input id={inputId} type="text" value={value ?? ''} onChange={(event) => onChange(setting.key, event.target.value)} />
-        )}
+        <div className="setting-input-stack">
+          {setting.type === 'boolean' ? (
+            <label className="toggle-switch" htmlFor={inputId}>
+              <input id={inputId} type="checkbox" checked={normalizeBoolean(value)} onChange={(event) => onChange(setting.key, event.target.checked)} />
+              <span>{normalizeBoolean(value) ? 'Enabled' : 'Disabled'}</span>
+            </label>
+          ) : setting.type === 'mode' ? (
+            <select id={inputId} value={value ?? ''} onChange={(event) => onChange(setting.key, event.target.value)}>
+              {setting.options.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          ) : setting.type === 'number' ? (
+            <input id={inputId} type="number" value={value ?? ''} onChange={(event) => onChange(setting.key, event.target.value === '' ? '' : Number(event.target.value))} />
+          ) : (
+            <input id={inputId} type="text" value={value ?? ''} onChange={(event) => onChange(setting.key, event.target.value)} />
+          )}
+          <button type="button" className="action-button compact" disabled={!hasDefault} onClick={() => onRestoreDefault(setting)}>
+            Restore Default
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -997,6 +1406,8 @@ function UniverseDetail({ item }) {
       <DetailRow label="Participation score" value={formatNumber(item.participationScore)} />
       <DetailRow label="Trend score" value={formatNumber(item.trendScore)} />
       <DetailRow label="Composite score" value={formatNumber(item.compositeScore)} />
+      <DetailRow label="Why symbol is in universe" value={item.selectionReason || 'None'} />
+      <DetailRow label="Last candle" value={formatTime(item.lastCandleAt)} />
       <DetailRow label="Block reason" value={item.blockReason || 'None'} />
       <DetailRow label="Raw factors" value={JSON.stringify(item.raw ?? {}, null, 2)} mono />
     </div>
@@ -1026,13 +1437,14 @@ function SimpleTable({ columns, rows, onRowClick, emptyText }) {
   );
 }
 
-function PanelHeader({ title, subtitle }) {
+function PanelHeader({ title, subtitle, action = null }) {
   return (
     <div className="panel-header">
       <div>
         <div className="eyebrow">{subtitle}</div>
         <h3>{title}</h3>
       </div>
+      {action ? <div>{action}</div> : null}
     </div>
   );
 }

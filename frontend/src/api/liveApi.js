@@ -111,7 +111,7 @@ export async function loadLiveSnapshot() {
     throw new Error('Backend live endpoints are unavailable. I could not verify live UI data because the API did not answer from the uploaded project.');
   }
 
-  const settings = normalizeSettings(settingsRes.data || [], runtimeRes.data || null);
+  const settings = normalizeSettings(settingsRes.data || [], runtimeRes.data || null, controlsRes.data || null);
   const universe = normalizeUniverse(stockUniverseRes.data || [], cryptoUniverseRes.data || []);
   const strategies = normalizeStrategies(stockStrategiesRes.data || [], cryptoStrategiesRes.data || []);
   const positions = normalizePositions(stockPositionsRes.data || [], cryptoPositionsRes.data || []);
@@ -213,4 +213,41 @@ export async function saveSettings(changes, currentSettings = []) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ items }),
   });
+}
+
+export async function saveSettingItems(items) {
+  const payloadItems = (Array.isArray(items) ? items : []).map((item) => ({
+    key: item.key,
+    value: serializeSettingValue(item.value, item.valueType || item.value_type || 'string'),
+    value_type: item.valueType || item.value_type || 'string',
+    description: item.description || null,
+    is_secret: Boolean(item.isSecret ?? item.is_secret),
+  }));
+
+  return fetchJson('/settings/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: payloadItems }),
+  });
+}
+
+export async function fetchLiveRolloutChecklist() {
+  return fetchJson('/operations/live-rollout/checklist');
+}
+
+export async function runConnectionDiagnostics() {
+  const checks = [
+    { label: 'health', path: '/health' },
+    { label: 'controls', path: '/controls/snapshot' },
+    { label: 'runtime', path: '/settings/runtime/snapshot' },
+  ];
+
+  return Promise.all(checks.map(async (check) => {
+    try {
+      const data = await fetchJson(check.path);
+      return { ...check, ok: true, data };
+    } catch (error) {
+      return { ...check, ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }));
 }

@@ -25,6 +25,49 @@ const KRAKEN_PAIR_DISPLAY_MAP = {
   NEARUSD: { displaySymbol: 'NEAR/USD', displayName: 'NEAR Protocol' },
 };
 
+const DEFAULT_SETTINGS_CATALOG = [
+  { key: 'execution.default_mode', valueType: 'string', defaultValue: 'mixed', description: 'Default execution route for the full bot.' },
+  { key: 'execution.stock.mode', valueType: 'string', defaultValue: 'paper', description: 'Stock venue route override.' },
+  { key: 'execution.crypto.mode', valueType: 'string', defaultValue: 'paper', description: 'Crypto venue route override.' },
+  { key: 'controls.kill_switch_enabled', valueType: 'bool', defaultValue: false, description: 'Blocks new entries immediately.' },
+  { key: 'controls.stock.trading_enabled', valueType: 'bool', defaultValue: true, description: 'Enable or disable new stock trades.' },
+  { key: 'controls.crypto.trading_enabled', valueType: 'bool', defaultValue: true, description: 'Enable or disable new crypto trades.' },
+  { key: 'stock_universe_source', valueType: 'string', defaultValue: 'ai', description: 'Choose AI or fallback stock universe generation.' },
+  { key: 'stock_universe_max_size', valueType: 'int', defaultValue: 50, description: 'Maximum stock universe size.' },
+  { key: 'ai_enabled', valueType: 'bool', defaultValue: true, description: 'Allow AI ranking for stock universe selection.' },
+  { key: 'ai_run_once_daily', valueType: 'bool', defaultValue: true, description: 'Only run the AI stock universe once per day.' },
+  { key: 'ai_premarket_time_et', valueType: 'string', defaultValue: '08:40', description: 'Premarket AI universe build time in New York.' },
+  { key: 'risk.default_profile', valueType: 'string', defaultValue: 'moderate', description: 'Risk profile label used by the risk gate.' },
+  { key: 'risk.max_account_deployment_pct', valueType: 'float', defaultValue: 0.9, description: 'Maximum deployed capital across all open trades.' },
+  { key: 'risk.max_per_trade_pct', valueType: 'float', defaultValue: 0.02, description: 'Hard max risk allowed per trade.' },
+  { key: 'risk.default_per_trade_pct', valueType: 'float', defaultValue: 0.0125, description: 'Default target risk per trade.' },
+  { key: 'risk.long_only_until_equity', valueType: 'float', defaultValue: 2500, description: 'Remain long-only until equity exceeds this amount.' },
+  { key: 'risk.stock.soft_stop_pct', valueType: 'float', defaultValue: -0.035, description: 'Stock soft circuit-breaker threshold.' },
+  { key: 'risk.stock.hard_stop_pct', valueType: 'float', defaultValue: -0.055, description: 'Stock hard circuit-breaker threshold.' },
+  { key: 'risk.crypto.soft_stop_pct', valueType: 'float', defaultValue: -0.04, description: 'Crypto soft circuit-breaker threshold.' },
+  { key: 'risk.crypto.hard_stop_pct', valueType: 'float', defaultValue: -0.065, description: 'Crypto hard circuit-breaker threshold.' },
+  { key: 'risk.total_account.hard_stop_pct', valueType: 'float', defaultValue: -0.075, description: 'Whole-account hard stop threshold.' },
+  { key: 'strategy_enabled.stock.trend_pullback_long', valueType: 'bool', defaultValue: true, description: 'Enable the stock Trend Pullback Long strategy.' },
+  { key: 'strategy_enabled.stock.vwap_reclaim_long', valueType: 'bool', defaultValue: true, description: 'Enable the stock VWAP Reclaim Long strategy.' },
+  { key: 'strategy_enabled.stock.opening_range_breakout_long', valueType: 'bool', defaultValue: true, description: 'Enable the stock Opening Range Breakout Long strategy.' },
+  { key: 'strategy_enabled.crypto.trend_continuation_long', valueType: 'bool', defaultValue: true, description: 'Enable the crypto 4H/1H Trend Continuation Long strategy.' },
+  { key: 'strategy_enabled.crypto.vwap_reclaim_long', valueType: 'bool', defaultValue: true, description: 'Enable the crypto VWAP Reclaim Long strategy.' },
+  { key: 'strategy_enabled.crypto.breakout_long', valueType: 'bool', defaultValue: true, description: 'Enable the crypto Breakout Long strategy.' },
+  { key: 'strategy_enabled.crypto.bbrsi_mean_reversion_long', valueType: 'bool', defaultValue: true, description: 'Enable the crypto BBRSI Mean Reversion Long strategy.' },
+  { key: 'stops.stock.fallback_stop_pct', valueType: 'float', defaultValue: 0.01, description: 'Stock fallback stop percentage.' },
+  { key: 'stops.stock.trailing_activation_pct', valueType: 'float', defaultValue: 0.01, description: 'Stock trailing-stop activation threshold.' },
+  { key: 'stops.stock.trailing_offset_pct', valueType: 'float', defaultValue: 0.0075, description: 'Stock trailing-stop offset percentage.' },
+  { key: 'stops.stock.step_trigger_pct', valueType: 'float', defaultValue: 0.02, description: 'Stock step-stop trigger percentage.' },
+  { key: 'stops.stock.step_increment_pct', valueType: 'float', defaultValue: 0.01, description: 'Stock step-stop increment percentage.' },
+  { key: 'stops.crypto.fallback_stop_pct', valueType: 'float', defaultValue: 0.015, description: 'Crypto fallback stop percentage.' },
+  { key: 'stops.crypto.trailing_activation_pct', valueType: 'float', defaultValue: 0.015, description: 'Crypto trailing-stop activation threshold.' },
+  { key: 'stops.crypto.trailing_offset_pct', valueType: 'float', defaultValue: 0.01, description: 'Crypto trailing-stop offset percentage.' },
+  { key: 'stops.crypto.step_trigger_pct', valueType: 'float', defaultValue: 0.025, description: 'Crypto step-stop trigger percentage.' },
+  { key: 'stops.crypto.step_increment_pct', valueType: 'float', defaultValue: 0.0125, description: 'Crypto step-stop increment percentage.' },
+];
+
+const SETTINGS_CATALOG_BY_KEY = new Map(DEFAULT_SETTINGS_CATALOG.map((item, index) => [item.key, { ...item, order: index }]));
+
 export function toNumber(value) {
   if (value == null || value === '') return null;
   const numeric = Number(value);
@@ -72,6 +115,17 @@ export function formatSettingLabel(key) {
     'stock_universe_max_size': 'Stock Universe Max Size',
     'ai_enabled': 'AI Universe Enabled',
     'ai_run_once_daily': 'AI Universe Once Daily',
+    'ai_premarket_time_et': 'AI Premarket Time ET',
+    'risk.default_profile': 'Risk Profile',
+    'risk.max_account_deployment_pct': 'Max Account Deployment %',
+    'risk.max_per_trade_pct': 'Max Risk Per Trade %',
+    'risk.default_per_trade_pct': 'Default Risk Per Trade %',
+    'risk.long_only_until_equity': 'Long Only Until Equity',
+    'risk.stock.soft_stop_pct': 'Stock Soft Stop %',
+    'risk.stock.hard_stop_pct': 'Stock Hard Stop %',
+    'risk.crypto.soft_stop_pct': 'Crypto Soft Stop %',
+    'risk.crypto.hard_stop_pct': 'Crypto Hard Stop %',
+    'risk.total_account.hard_stop_pct': 'Total Account Hard Stop %',
   };
 
   if (map[key]) return map[key];
@@ -86,12 +140,12 @@ export function inferCategory(key) {
   if (raw.startsWith('controls.') || raw.startsWith('execution.') || raw.includes('kraken') || raw.includes('public') || raw.includes('alpaca')) {
     return 'Broker / Account';
   }
-  if (raw.startsWith('risk.') || raw.includes('breaker')) return 'Risk Controls';
-  if (raw.includes('size') || raw.includes('deployment')) return 'Position Sizing';
-  if (raw.startsWith('strategy_') || raw.startsWith('strategy.')) return 'Strategy Controls';
+  if (raw.startsWith('strategy_enabled.') || raw.startsWith('strategy_') || raw.startsWith('strategy.')) return 'Strategy Controls';
   if (raw.includes('universe') || raw.startsWith('ai_')) return 'Universe Controls';
+  if (raw.startsWith('stops.') || raw.startsWith('stop_') || raw.includes('.stop')) return 'Stop Management';
+  if (raw.startsWith('risk.') && (raw.includes('deployment') || raw.includes('per_trade') || raw.includes('long_only'))) return 'Position Sizing';
+  if (raw.startsWith('risk.') || raw.includes('breaker') || raw.includes('hard_stop') || raw.includes('soft_stop')) return 'Risk Controls';
   if (raw.includes('order') || raw.includes('time_in_force')) return 'Execution Controls';
-  if (raw.startsWith('stop_') || raw.includes('.stop')) return 'Stop Management';
   if (raw.includes('notify') || raw.includes('alert')) return 'Notifications';
   return 'UI / Admin';
 }
@@ -108,30 +162,72 @@ function inferSettingInputType(key, valueType) {
   return 'text';
 }
 
-export function normalizeSettings(settings = [], runtimeSnapshot = null) {
-  const runtimeDefaults = runtimeSnapshot && typeof runtimeSnapshot === 'object'
-    ? Object.fromEntries(Object.entries(runtimeSnapshot).filter(([, value]) => ['string', 'number', 'boolean'].includes(typeof value)))
-    : {};
+function runtimeDefaultsFromSnapshot(runtimeSnapshot) {
+  if (!runtimeSnapshot || typeof runtimeSnapshot !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(runtimeSnapshot).filter(([key, value]) => key !== 'setting_sources' && ['string', 'number', 'boolean'].includes(typeof value))
+  );
+}
 
-  return (Array.isArray(settings) ? settings : []).map((row) => {
-    const key = row.key;
-    const type = inferSettingInputType(key, row.value_type);
-    const parsedValue = parseSettingValue(row.value, row.value_type);
-    return {
-      key,
-      label: formatSettingLabel(key),
-      category: inferCategory(key),
-      valueType: row.value_type || 'string',
-      type,
-      value: parsedValue,
-      defaultValue: Object.prototype.hasOwnProperty.call(runtimeDefaults, key) ? runtimeDefaults[key] : null,
-      description: row.description || '',
-      lastChanged: row.updated_at || null,
-      dangerous: /kill_switch|\.mode$|default_mode|flatten|breaker|hard_stop|live/i.test(key),
-      options: type === 'mode' ? MODE_OPTIONS : [],
-      raw: row,
-    };
-  });
+function resolveSyntheticSettingValue(key, runtimeDefaults, controlSnapshot, fallbackValue) {
+  const controls = controlSnapshot && typeof controlSnapshot === 'object' ? controlSnapshot : {};
+  if (key === 'execution.default_mode') return controls.default_mode || runtimeDefaults[key] || fallbackValue;
+  if (key === 'execution.stock.mode') return controls.stock_mode || runtimeDefaults[key] || fallbackValue;
+  if (key === 'execution.crypto.mode') return controls.crypto_mode || runtimeDefaults[key] || fallbackValue;
+  if (key === 'controls.kill_switch_enabled') return controls.kill_switch_enabled ?? fallbackValue;
+  if (key === 'controls.stock.trading_enabled') return controls.stock_trading_enabled ?? fallbackValue;
+  if (key === 'controls.crypto.trading_enabled') return controls.crypto_trading_enabled ?? fallbackValue;
+  if (Object.prototype.hasOwnProperty.call(runtimeDefaults, key)) return runtimeDefaults[key];
+  return fallbackValue;
+}
+
+export function normalizeSettings(settings = [], runtimeSnapshot = null, controlSnapshot = null) {
+  const runtimeDefaults = runtimeDefaultsFromSnapshot(runtimeSnapshot);
+  const rowsByKey = new Map((Array.isArray(settings) ? settings : []).map((row) => [row.key, row]));
+
+  for (const descriptor of DEFAULT_SETTINGS_CATALOG) {
+    if (!rowsByKey.has(descriptor.key)) {
+      const currentValue = resolveSyntheticSettingValue(descriptor.key, runtimeDefaults, controlSnapshot, descriptor.defaultValue);
+      rowsByKey.set(descriptor.key, {
+        key: descriptor.key,
+        value: serializeSettingValue(currentValue, descriptor.valueType),
+        value_type: descriptor.valueType,
+        description: descriptor.description,
+        is_secret: false,
+        updated_at: null,
+        synthetic: true,
+      });
+    }
+  }
+
+  return Array.from(rowsByKey.values())
+    .map((row) => {
+      const key = row.key;
+      const descriptor = SETTINGS_CATALOG_BY_KEY.get(key) || {};
+      const valueType = row.value_type || descriptor.valueType || 'string';
+      const type = inferSettingInputType(key, valueType);
+      const parsedValue = parseSettingValue(row.value, valueType);
+      const defaultValue = Object.prototype.hasOwnProperty.call(descriptor, 'defaultValue')
+        ? descriptor.defaultValue
+        : (Object.prototype.hasOwnProperty.call(runtimeDefaults, key) ? runtimeDefaults[key] : null);
+
+      return {
+        key,
+        label: formatSettingLabel(key),
+        category: descriptor.category || inferCategory(key),
+        valueType,
+        type,
+        value: parsedValue,
+        defaultValue,
+        description: row.description || descriptor.description || '',
+        lastChanged: row.updated_at || null,
+        dangerous: /kill_switch|\.mode$|default_mode|flatten|breaker|hard_stop|live/i.test(key),
+        options: type === 'mode' ? MODE_OPTIONS : [],
+        raw: row,
+        order: descriptor.order ?? Number.MAX_SAFE_INTEGER,
+      };
+    })
+    .sort((left, right) => (left.order - right.order) || left.label.localeCompare(right.label));
 }
 
 export function normalizeUniverse(stockRows = [], cryptoRows = []) {
@@ -164,6 +260,12 @@ function normalizeUniverseRows(rows, assetClass) {
   return rows.map((row, index) => {
     const payload = row.payload && typeof row.payload === 'object' ? row.payload : {};
     const display = resolveDisplayMeta(row, assetClass);
+    const blockedReasons = stringifyList(payload.blocked_reasons);
+    const selectionReason = row.selection_reason || payload.selection_reason || '';
+    const blockReason = payload.block_reason || blockedReasons || '';
+    const eligibility = payload.eligibility
+      || (blockReason ? 'Blocked' : (payload.last_price != null || selectionReason ? 'Eligible' : 'Selected'));
+
     return {
       id: row.id || `${assetClass}-${row.symbol || index}`,
       symbol: display.displaySymbol,
@@ -174,13 +276,15 @@ function normalizeUniverseRows(rows, assetClass) {
       rank: row.rank ?? index + 1,
       lastPrice: toNumber(payload.last_price ?? payload.price ?? payload.last),
       changePct: toPercent(payload.change_pct ?? payload.daily_change_pct ?? payload.changePercent),
+      lastCandleAt: payload.last_candle_at || null,
       liquidityScore: toNumber(payload.liquidity_score ?? payload.liquidity),
       participationScore: toNumber(payload.participation_score ?? payload.participation),
       trendScore: toNumber(payload.trend_score ?? payload.trend),
       stabilityScore: toNumber(payload.stability_score ?? payload.stability),
       compositeScore: toNumber(payload.composite_score ?? payload.score),
-      eligibility: payload.eligibility || row.selection_reason || 'Selected',
-      blockReason: payload.block_reason || '',
+      eligibility,
+      selectionReason,
+      blockReason,
       raw: row,
     };
   });
