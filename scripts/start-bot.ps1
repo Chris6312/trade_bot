@@ -243,6 +243,46 @@ function Clear-KillSwitchIfNeeded {
     }
 }
 
+function Invoke-ControlAction {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$BackendPort,
+        [Parameter(Mandatory = $true)]
+        [string]$ApiPrefix,
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Payload,
+        [string]$Label = $Path,
+        [int]$TimeoutSeconds = 120
+    )
+
+    $uri = "http://localhost:$BackendPort$ApiPrefix$Path"
+    $body = $Payload | ConvertTo-Json -Depth 6
+    Write-Host "Startup action: $Label" -ForegroundColor Cyan
+    $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType 'application/json' -Body $body -TimeoutSec $TimeoutSeconds
+    if ($null -ne $response.message) {
+        Write-Host ("  {0}" -f $response.message) -ForegroundColor DarkGray
+    }
+    return $response
+}
+
+function Invoke-StartupPipeline {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$BackendPort,
+        [Parameter(Mandatory = $true)]
+        [string]$ApiPrefix
+    )
+
+    $allAssetsPayload = @{ asset_class = 'all'; force = $true }
+
+    Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/universe/run-once' -Payload $allAssetsPayload -Label 'Universe refresh' | Out-Null
+    Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/candles/backfill' -Payload $allAssetsPayload -Label 'Candle backfill' -TimeoutSeconds 300 | Out-Null
+    Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/regime/run-once' -Payload $allAssetsPayload -Label 'Regime recompute' | Out-Null
+    Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/strategy/run-once' -Payload $allAssetsPayload -Label 'Strategy refresh' | Out-Null
+}
+
 function Invoke-LocalAlembic {
     param(
         [Parameter(Mandatory = $true)]
@@ -487,6 +527,8 @@ Write-Host '3/5 Starting backend...' -ForegroundColor Cyan
 docker compose up -d backend | Out-Null
 Wait-ForHttpOk -Url "http://localhost:$backendPort/health" -ExpectedJsonStatus 'ok' -TimeoutSeconds $BackendTimeoutSeconds
 Clear-KillSwitchIfNeeded -BackendPort $backendPort -ApiPrefix $apiPrefix -KeepKillSwitchEnabled:$KeepKillSwitchEnabled
+Write-Host '3.5/5 Priming startup pipeline...' -ForegroundColor Cyan
+Invoke-StartupPipeline -BackendPort $backendPort -ApiPrefix $apiPrefix
 
 if (-not $NoFrontend) {
     Write-Host '4/5 Starting frontend...' -ForegroundColor Cyan

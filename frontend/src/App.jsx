@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import './styles.css';
-import { API_BASE, executeControlAction, fetchLiveRolloutChecklist, loadLiveSnapshot, runConnectionDiagnostics, saveSettingItems, saveSettings } from './api/liveApi';
+import { executeControlAction, fetchLiveRolloutChecklist, loadLiveSnapshot, runConnectionDiagnostics, saveSettingItems, saveSettings } from './api/liveApi';
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: '◫' },
@@ -40,6 +40,26 @@ const PAGE_ACTIONS = {
     { key: 'refresh', label: 'Refresh', dangerous: false },
     { key: 'toggle_kill_switch', label: 'Kill Switch', dangerous: true },
   ],
+};
+
+const DEFAULT_SCOPE_OPTIONS = [
+  { value: 'all', label: 'All scopes' },
+  { value: 'stock', label: 'Stocks' },
+  { value: 'crypto', label: 'Crypto' },
+  { value: 'paper', label: 'Paper' },
+  { value: 'live', label: 'Live' },
+  { value: 'eligible', label: 'Eligible' },
+  { value: 'blocked', label: 'Blocked' },
+];
+
+const STRATEGY_SCOPE_OPTIONS = [
+  { value: 'all', label: 'All strategies' },
+  { value: 'eligible', label: 'Eligible' },
+  { value: 'blocked', label: 'Blocked' },
+];
+
+const SCOPE_OPTIONS_BY_PAGE = {
+  strategies: STRATEGY_SCOPE_OPTIONS,
 };
 
 const SETTINGS_GROUPS = [
@@ -121,6 +141,27 @@ function formatCompactTime(value) {
   } catch {
     return String(value);
   }
+}
+
+function toneFromNumber(value) {
+  if (value == null || Number.isNaN(Number(value))) return 'neutral';
+  const numeric = Number(value);
+  if (numeric > 0) return 'positive';
+  if (numeric < 0) return 'danger';
+  return 'neutral';
+}
+
+function sortStrategiesByReadiness(rows, direction = 'desc') {
+  const multiplier = direction === 'asc' ? 1 : -1;
+  return [...rows].sort((left, right) => {
+    const leftValue = Number(left.readinessScore);
+    const rightValue = Number(right.readinessScore);
+    const leftMissing = Number.isNaN(leftValue);
+    const rightMissing = Number.isNaN(rightValue);
+    if (leftMissing !== rightMissing) return leftMissing ? 1 : -1;
+    if (!leftMissing && leftValue !== rightValue) return (leftValue - rightValue) * multiplier;
+    return left.symbol.localeCompare(right.symbol) || left.primaryStrategy.localeCompare(right.primaryStrategy);
+  });
 }
 
 function titleCase(value) {
@@ -248,6 +289,14 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [drawer]);
 
+  const scopeOptions = SCOPE_OPTIONS_BY_PAGE[page] || DEFAULT_SCOPE_OPTIONS;
+
+  useEffect(() => {
+    if (!scopeOptions.some((option) => option.value === scope)) {
+      setScope(scopeOptions[0]?.value || 'all');
+    }
+  }, [page, scope, scopeOptions]);
+
   const changedSettings = useMemo(() => {
     const original = buildSettingMap(snapshot.settings);
     const changed = {};
@@ -280,7 +329,11 @@ function App() {
   const filteredStrategies = useMemo(() => {
     const search = query.trim().toLowerCase();
     return (snapshot.strategies || []).filter((row) => {
-      const scopeMatch = scope === 'all' || row.assetClass.toLowerCase() === scope;
+      const normalizedStatus = String(row.status || '').toLowerCase();
+      const isEligible = normalizedStatus !== 'blocked';
+      const scopeMatch = scope === 'all'
+        || (scope === 'eligible' && isEligible)
+        || (scope === 'blocked' && normalizedStatus === 'blocked');
       const queryMatch = !search || String(row.symbol).toLowerCase().includes(search) || String(row.primaryStrategy).toLowerCase().includes(search);
       return scopeMatch && queryMatch;
     });
@@ -363,8 +416,22 @@ function App() {
         return;
       }
 
-      await executeControlAction(action.key, { source: 'frontend' });
-      setNotice(`${action.label} submitted.`);
+      if (action.key === 'recompute_regime') {
+        const regime = await executeControlAction('recompute_regime', { source: 'frontend' });
+        await executeControlAction('refresh_strategies', { source: 'frontend' });
+        const summary = Array.isArray(regime.details)
+          ? regime.details.map((detail) => {
+            const asset = titleCase(detail.asset_class || 'asset');
+            return `${asset} ${titleCase(detail.regime || 'unavailable')}`;
+          }).join(' · ')
+          : '';
+        setNotice(summary ? `Regime recompute completed. ${summary}.` : 'Regime recompute completed.');
+        await refresh({ quiet: true });
+        return;
+      }
+
+      const response = await executeControlAction(action.key, { source: 'frontend' });
+      setNotice(response?.message || `${action.label} submitted.`);
       await refresh({ quiet: true });
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : `Failed to run ${action.label}.`);
@@ -563,6 +630,7 @@ function App() {
           page={page}
           scope={scope}
           setScope={setScope}
+          scopeOptions={scopeOptions}
           query={query}
           setQuery={setQuery}
           autoRefresh={autoRefresh}
@@ -575,7 +643,6 @@ function App() {
 
         {error ? <Banner tone="danger" text={error} /> : null}
         {notice ? <Banner tone="success" text={notice} onClose={() => setNotice('')} /> : null}
-        <Banner tone="info" text={`Live API base: ${API_BASE}`} />
 
         {page === 'dashboard' && (
           <DashboardPage snapshot={snapshot} positions={filteredPositions.slice(0, 6)} onOpen={setDrawer} />
@@ -699,7 +766,7 @@ function Sidebar({ page, setPage, snapshot }) {
   );
 }
 
-function TopBar({ page, scope, setScope, query, setQuery, autoRefresh, setAutoRefresh, actions, onAction, busyAction, fetchedAt }) {
+function TopBar({ page, scope, setScope, scopeOptions = DEFAULT_SCOPE_OPTIONS, query, setQuery, autoRefresh, setAutoRefresh, actions, onAction, busyAction, fetchedAt }) {
   return (
     <section className="panel-glass topbar">
       <div>
@@ -716,13 +783,9 @@ function TopBar({ page, scope, setScope, query, setQuery, autoRefresh, setAutoRe
           placeholder="Search symbol, strategy, or event"
         />
         <select value={scope} onChange={(event) => setScope(event.target.value)}>
-          <option value="all">All scopes</option>
-          <option value="stock">Stocks</option>
-          <option value="crypto">Crypto</option>
-          <option value="paper">Paper</option>
-          <option value="live">Live</option>
-          <option value="eligible">Eligible</option>
-          <option value="blocked">Blocked</option>
+          {scopeOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
         </select>
         <label className="toggle-inline">
           <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
@@ -768,7 +831,7 @@ function DashboardPage({ snapshot, positions, onOpen }) {
           <MiniStat label="System health" value={titleCase(snapshot.health.status)} tone={healthTone} />
           <MiniStat label="Stocks equity" value={formatMoney(summary.stockEquity)} />
           <MiniStat label="Crypto equity" value={formatMoney(summary.cryptoEquity)} />
-          <MiniStat label="API rows" value={formatNumber(snapshot.logs.length + snapshot.positions.length + snapshot.strategies.length)} />
+          <MiniStat label="Strategy rows" value={formatNumber(snapshot.strategies.length)} />
         </div>
       </article>
 
@@ -845,14 +908,15 @@ function UniversePage({ universe, onOpen, loading }) {
   return (
     <section className="page-grid two-column-grid">
       <article className="panel-glass table-panel">
-        <PanelHeader title="Stock universe" subtitle={loading ? 'Refreshing live rows…' : 'Live universe rows'} />
+        <PanelHeader title="Stock universe" subtitle={loading ? 'Refreshing live rows…' : 'Updates on stock 5m candle refresh'} />
         <SimpleTable
+          className="centered-table universe-table"
           columns={['Rank', 'Symbol', 'Price', 'Change', 'Eligibility']}
           rows={universe.stocks.map((row) => [
             row.rank,
             row.symbol,
             formatMoney(row.lastPrice),
-            formatPct(row.changePct),
+            <PercentValue value={row.changePct} />,
             <StatusPill label={row.eligibility} tone={toneFromText(row.eligibility)} />,
           ])}
           onRowClick={(index) => onOpen({ type: 'universe', item: universe.stocks[index] })}
@@ -861,14 +925,15 @@ function UniversePage({ universe, onOpen, loading }) {
       </article>
 
       <article className="panel-glass table-panel">
-        <PanelHeader title="Crypto universe" subtitle={loading ? 'Refreshing live rows…' : 'Live universe rows'} />
+        <PanelHeader title="Crypto universe" subtitle={loading ? 'Refreshing live rows…' : 'Updates on crypto 15m candle refresh'} />
         <SimpleTable
+          className="centered-table universe-table"
           columns={['Rank', 'Pair', 'Price', 'Change', 'Eligibility']}
           rows={universe.crypto.map((row) => [
             row.rank,
             row.symbol,
             formatMoney(row.lastPrice),
-            formatPct(row.changePct),
+            <PercentValue value={row.changePct} />,
             <StatusPill label={row.eligibility} tone={toneFromText(row.eligibility)} />,
           ])}
           onRowClick={(index) => onOpen({ type: 'universe', item: universe.crypto[index] })}
@@ -880,13 +945,34 @@ function UniversePage({ universe, onOpen, loading }) {
 }
 
 function StrategiesPage({ strategies, onOpen, loading }) {
-  const stocks = strategies.filter((row) => row.assetClass === 'Stock');
-  const crypto = strategies.filter((row) => row.assetClass === 'Crypto');
+  const [stockReadinessOrder, setStockReadinessOrder] = useState('desc');
+  const [cryptoReadinessOrder, setCryptoReadinessOrder] = useState('desc');
+  const stocks = sortStrategiesByReadiness(
+    strategies.filter((row) => row.assetClass === 'Stock'),
+    stockReadinessOrder,
+  );
+  const crypto = sortStrategiesByReadiness(
+    strategies.filter((row) => row.assetClass === 'Crypto'),
+    cryptoReadinessOrder,
+  );
   return (
     <section className="page-grid two-column-grid">
       <article className="panel-glass table-panel">
-        <PanelHeader title="Stock strategies" subtitle={loading ? 'Polling live signals…' : 'Live evaluation rows'} />
+        <PanelHeader
+          title="Stock strategies"
+          subtitle={loading ? 'Polling live signals…' : 'Live evaluation rows'}
+          action={(
+            <button
+              type="button"
+              className="action-button compact"
+              onClick={() => setStockReadinessOrder((current) => (current === 'desc' ? 'asc' : 'desc'))}
+            >
+              Readiness {stockReadinessOrder === 'desc' ? '↓' : '↑'}
+            </button>
+          )}
+        />
         <SimpleTable
+          className="centered-table strategy-table"
           columns={['Symbol', 'Primary', 'Readiness', 'Status', 'Regime']}
           rows={stocks.map((row) => [
             row.symbol,
@@ -901,8 +987,21 @@ function StrategiesPage({ strategies, onOpen, loading }) {
       </article>
 
       <article className="panel-glass table-panel">
-        <PanelHeader title="Crypto strategies" subtitle={loading ? 'Polling live signals…' : 'Live evaluation rows'} />
+        <PanelHeader
+          title="Crypto strategies"
+          subtitle={loading ? 'Polling live signals…' : 'Live evaluation rows'}
+          action={(
+            <button
+              type="button"
+              className="action-button compact"
+              onClick={() => setCryptoReadinessOrder((current) => (current === 'desc' ? 'asc' : 'desc'))}
+            >
+              Readiness {cryptoReadinessOrder === 'desc' ? '↓' : '↑'}
+            </button>
+          )}
+        />
         <SimpleTable
+          className="centered-table strategy-table"
           columns={['Symbol', 'Primary', 'Readiness', 'Status', 'Regime']}
           rows={crypto.map((row) => [
             row.symbol,
@@ -995,7 +1094,7 @@ function SettingsPage({
   })).filter((entry) => entry.rows.length > 0);
 
   return (
-    <section className="page-grid single-column-grid">
+    <section className="page-grid single-column-grid settings-page-grid">
       <article className="panel-glass settings-toolbar">
         <div>
           <div className="eyebrow">Settings search</div>
@@ -1341,7 +1440,7 @@ function StrategyDetail({ item }) {
       <DetailRow label="Thresholds passed" value={item.thresholdsPassed || 'None'} />
       <DetailRow label="Thresholds failed" value={item.thresholdsFailed || 'None'} />
       <DetailRow label="Regime requirement" value={item.regimeRequirement} />
-      <DetailRow label="Next reevaluation" value={item.nextReevaluation} />
+      <DetailRow label="Next reevaluation" value={formatTime(item.nextReevaluation)} />
       <DetailRow label="Previous signal attempts" value={item.previousSignalAttempts || 'None'} />
       <DetailRow label="Why it did or did not qualify" value={item.explanation} />
     </div>
@@ -1400,8 +1499,9 @@ function UniverseDetail({ item }) {
       <DetailRow label="Asset name" value={item.displayName || '—'} />
       <DetailRow label="Venue symbol" value={item.marketSymbol || item.rawSymbol || '—'} />
       <DetailRow label="Rank" value={String(item.rank)} />
+      <DetailRow label="Source rank" value={String(item.sourceRank ?? item.rank)} />
       <DetailRow label="Last price" value={formatMoney(item.lastPrice)} />
-      <DetailRow label="Change" value={formatPct(item.changePct)} />
+      <DetailRow label="Change" value={<PercentValue value={item.changePct} />} />
       <DetailRow label="Liquidity score" value={formatNumber(item.liquidityScore)} />
       <DetailRow label="Participation score" value={formatNumber(item.participationScore)} />
       <DetailRow label="Trend score" value={formatNumber(item.trendScore)} />
@@ -1414,9 +1514,9 @@ function UniverseDetail({ item }) {
   );
 }
 
-function SimpleTable({ columns, rows, onRowClick, emptyText }) {
+function SimpleTable({ columns, rows, onRowClick, emptyText, className = '' }) {
   return (
-    <div className="table-wrap">
+    <div className={`table-wrap ${className}`.trim()}>
       <table>
         <thead>
           <tr>{columns.map((column) => <th key={column}>{column}</th>)}</tr>
@@ -1469,6 +1569,10 @@ function MiniStat({ label, value, tone = 'neutral' }) {
 
 function StatusPill({ label, tone = 'neutral' }) {
   return <span className={`status-pill tone-${tone}`}>{titleCase(label)}</span>;
+}
+
+function PercentValue({ value }) {
+  return <span className={`numeric-tone tone-${toneFromNumber(value)}`}>{formatPct(value)}</span>;
 }
 
 function DetailRow({ label, value, mono = false }) {

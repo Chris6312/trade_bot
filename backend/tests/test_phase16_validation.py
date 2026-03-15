@@ -16,7 +16,7 @@ from backend.app.services.execution_service import list_current_execution_orders
 from backend.app.services.position_service import list_current_position_states
 from backend.app.services.stop_service import list_current_stop_states
 from backend.app.services.strategy_service import list_current_strategy_snapshots
-from backend.app.services.universe_service import UniverseSymbolRecord, persist_universe_run
+from backend.app.services.universe_service import UniverseSymbolRecord, persist_universe_run, trading_date_for_now
 from backend.app.workers.execution_worker import ExecutionWorker
 from backend.app.workers.feature_worker import FeatureWorker
 from backend.app.workers.position_worker import PositionWorker
@@ -24,6 +24,20 @@ from backend.app.workers.regime_worker import RegimeWorker
 from backend.app.workers.risk_worker import RiskWorker
 from backend.app.workers.stop_worker import StopWorker
 from backend.app.workers.strategy_worker import StrategyWorker
+
+
+PHASE16_STRATEGY_BEFORE_NOW = datetime(2026, 3, 14, 16, 0, tzinfo=UTC)
+PHASE16_FEATURE_NOW = datetime(2026, 3, 14, 16, 1, tzinfo=UTC)
+PHASE16_STRATEGY_MID_NOW = datetime(2026, 3, 14, 16, 2, tzinfo=UTC)
+PHASE16_REGIME_NOW = datetime(2026, 3, 14, 16, 5, tzinfo=UTC)
+PHASE16_STRATEGY_READY_NOW = datetime(2026, 3, 14, 16, 10, tzinfo=UTC)
+PHASE16_RISK_NOW = datetime(2026, 3, 14, 16, 20, tzinfo=UTC)
+PHASE16_EXECUTION_NOW = datetime(2026, 3, 14, 16, 21, tzinfo=UTC)
+PHASE16_STOP_NOW = datetime(2026, 3, 14, 16, 25, tzinfo=UTC)
+PHASE16_APPEND_PRICE_AT = datetime(2026, 3, 14, 16, 29, tzinfo=UTC)
+PHASE16_POSITION_NOW = datetime(2026, 3, 14, 16, 30, tzinfo=UTC)
+PHASE16_UNIVERSE_RESOLVED_AT = datetime(2026, 3, 14, 9, 0, tzinfo=UTC)
+PHASE16_ACCOUNT_AS_OF = datetime(2026, 3, 14, 15, 0, tzinfo=UTC)
 
 
 class RecordingExecutionAdapter:
@@ -104,7 +118,7 @@ def test_phase16_worker_dependency_order_requires_features_and_regime_before_rou
 
     strategy_before = StrategyWorker(db_session).build_stock_candidates(
         timeframe="1h",
-        now=datetime(2026, 3, 14, 16, 0, tzinfo=UTC),
+        now=PHASE16_STRATEGY_BEFORE_NOW,
     )
     assert strategy_before.ready_rows == 0
     assert strategy_before.skipped_reason == "regime_unavailable"
@@ -113,13 +127,13 @@ def test_phase16_worker_dependency_order_requires_features_and_regime_before_rou
 
     feature_summary = FeatureWorker(db_session).build_stock_features(
         timeframe="1h",
-        now=datetime(2026, 3, 14, 16, 1, tzinfo=UTC),
+        now=PHASE16_FEATURE_NOW,
     )
     assert feature_summary.computed_snapshots > 0
 
     strategy_without_regime = StrategyWorker(db_session).build_stock_candidates(
         timeframe="1h",
-        now=datetime(2026, 3, 14, 16, 2, tzinfo=UTC),
+        now=PHASE16_STRATEGY_MID_NOW,
     )
     assert strategy_without_regime.ready_rows == 0
     assert strategy_without_regime.skipped_reason == "regime_unavailable"
@@ -128,19 +142,19 @@ def test_phase16_worker_dependency_order_requires_features_and_regime_before_rou
 
     regime_summary = RegimeWorker(db_session).build_stock_regime(
         timeframe="1h",
-        now=datetime(2026, 3, 14, 16, 5, tzinfo=UTC),
+        now=PHASE16_REGIME_NOW,
     )
     assert regime_summary.regime == "bull"
 
     strategy_after = StrategyWorker(db_session).build_stock_candidates(
         timeframe="1h",
-        now=datetime(2026, 3, 14, 16, 10, tzinfo=UTC),
+        now=PHASE16_STRATEGY_READY_NOW,
     )
     assert strategy_after.ready_rows >= 1
 
     risk_summary = RiskWorker(db_session).build_stock_risk(
         timeframe="1h",
-        now=datetime(2026, 3, 14, 16, 20, tzinfo=UTC),
+        now=PHASE16_RISK_NOW,
     )
     assert risk_summary.accepted_count == 1
 
@@ -148,7 +162,7 @@ def test_phase16_worker_dependency_order_requires_features_and_regime_before_rou
     execution_summary = ExecutionWorker(
         db_session,
         adapter_resolver=_mapping_resolver({"alpaca_stock_paper": adapter}),
-    ).route_stock_orders(timeframe="1h", now=datetime(2026, 3, 14, 16, 21, tzinfo=UTC))
+    ).route_stock_orders(timeframe="1h", now=PHASE16_EXECUTION_NOW)
 
     assert execution_summary.routed_count == 1
     assert execution_summary.fill_count == 1
@@ -161,10 +175,10 @@ def test_phase16_worker_dependency_order_requires_features_and_regime_before_rou
 def test_phase16_stock_paper_trade_chain_reaches_stop_and_position_sync(db_session: Session) -> None:
     _run_stock_chain(db_session)
 
-    _append_stock_price(db_session, symbol="AAPL", close=Decimal("111"), timestamp=datetime(2026, 3, 14, 16, 29, tzinfo=UTC))
+    _append_stock_price(db_session, symbol="AAPL", close=Decimal("111"), timestamp=PHASE16_APPEND_PRICE_AT)
     stop_summary = StopWorker(db_session).manage_stock_stops(
         timeframe="1h",
-        now=datetime(2026, 3, 14, 16, 25, tzinfo=UTC),
+        now=PHASE16_STOP_NOW,
     )
     assert stop_summary.created_count == 1
     stop_rows = list_current_stop_states(db_session, asset_class="stock", timeframe="1h")
@@ -175,7 +189,7 @@ def test_phase16_stock_paper_trade_chain_reaches_stop_and_position_sync(db_sessi
     position_summary = PositionWorker(
         db_session,
         adapter_resolver=_mapping_resolver({"alpaca_stock_paper": sync_adapter}),
-    ).sync_stock_positions(timeframe="1h", now=datetime(2026, 3, 14, 16, 30, tzinfo=UTC))
+    ).sync_stock_positions(timeframe="1h", now=PHASE16_POSITION_NOW)
 
     assert position_summary.position_count == 1
     assert position_summary.mismatch_count == 0
@@ -191,12 +205,14 @@ def test_phase16_operator_ui_smoke_routes_cover_core_control_surfaces(client) ->
     session = get_session_factory()()
     try:
         _run_stock_chain(session)
-        _append_stock_price(session, symbol="AAPL", close=Decimal("111"), timestamp=datetime(2026, 3, 14, 16, 29, tzinfo=UTC))
-        StopWorker(session).manage_stock_stops(timeframe="1h", now=datetime(2026, 3, 14, 16, 25, tzinfo=UTC))
+        _append_stock_price(session, symbol="AAPL", close=Decimal("111"), timestamp=PHASE16_APPEND_PRICE_AT)
+        StopWorker(session).manage_stock_stops(timeframe="1h", now=PHASE16_STOP_NOW)
         PositionWorker(
             session,
-            adapter_resolver=_mapping_resolver({"alpaca_stock_paper": RecordingPositionSyncAdapter(price=Decimal("111"), quantity=Decimal("4"))}),
-        ).sync_stock_positions(timeframe="1h", now=datetime(2026, 3, 14, 16, 30, tzinfo=UTC))
+            adapter_resolver=_mapping_resolver(
+                {"alpaca_stock_paper": RecordingPositionSyncAdapter(price=Decimal("111"), quantity=Decimal("4"))}
+            ),
+        ).sync_stock_positions(timeframe="1h", now=PHASE16_POSITION_NOW)
         session.add(SystemEvent(event_type="phase16.smoke", severity="info", message="operator smoke seeded", event_source="tests"))
         session.commit()
     finally:
@@ -222,9 +238,11 @@ def test_phase16_operator_ui_smoke_routes_cover_core_control_surfaces(client) ->
     assert responses["health"].json()["status"] == "ok"
     assert responses["controls"].json()["kill_switch_enabled"] is False
     assert responses["universe"].json()[0]["symbol"] == "AAPL"
+
     strategy_rows = responses["strategy"].json()
     risk_rows = responses["risk"].json()
     execution_rows = responses["execution"].json()
+
     assert all(row["symbol"] == "AAPL" for row in strategy_rows)
     assert any(row["status"] == "accepted" for row in risk_rows)
     assert execution_rows[0]["status"] == "filled"
@@ -236,39 +254,52 @@ def _run_stock_chain(db: Session) -> None:
     _seed_stock_universe(db, symbols=("AAPL",))
     _seed_stock_ready_candles(db, symbol="AAPL")
     _seed_stock_accounts(db)
-    FeatureWorker(db).build_stock_features(timeframe="1h", now=datetime(2026, 3, 14, 16, 1, tzinfo=UTC))
-    RegimeWorker(db).build_stock_regime(timeframe="1h", now=datetime(2026, 3, 14, 16, 5, tzinfo=UTC))
-    StrategyWorker(db).build_stock_candidates(timeframe="1h", now=datetime(2026, 3, 14, 16, 10, tzinfo=UTC))
-    RiskWorker(db).build_stock_risk(timeframe="1h", now=datetime(2026, 3, 14, 16, 20, tzinfo=UTC))
+    FeatureWorker(db).build_stock_features(timeframe="1h", now=PHASE16_FEATURE_NOW)
+    RegimeWorker(db).build_stock_regime(timeframe="1h", now=PHASE16_REGIME_NOW)
+    StrategyWorker(db).build_stock_candidates(timeframe="1h", now=PHASE16_STRATEGY_READY_NOW)
+    RiskWorker(db).build_stock_risk(timeframe="1h", now=PHASE16_RISK_NOW)
     ExecutionWorker(
         db,
         adapter_resolver=_mapping_resolver({"alpaca_stock_paper": RecordingExecutionAdapter(fill_price=Decimal("110"))}),
-    ).route_stock_orders(timeframe="1h", now=datetime(2026, 3, 14, 16, 21, tzinfo=UTC))
+    ).route_stock_orders(timeframe="1h", now=PHASE16_EXECUTION_NOW)
 
 
 def _seed_stock_universe(db: Session, *, symbols: tuple[str, ...]) -> None:
-    persist_universe_run(
-        db,
-        asset_class="stock",
-        venue="alpaca",
-        trade_date=date(2026, 3, 14),
-        source="phase16",
-        status="resolved",
-        symbols=[
-            UniverseSymbolRecord(
-                symbol=symbol,
-                rank=index,
-                source="phase16",
-                venue="alpaca",
-                asset_class="stock",
-                selection_reason="validation_seed",
-                payload={"seeded": True},
-            )
-            for index, symbol in enumerate(symbols, start=1)
-        ],
-        resolved_at=datetime(2026, 3, 14, 9, 0, tzinfo=UTC),
-        payload={"seeded": True},
-    )
+    for trade_date in _phase16_trade_dates():
+        persist_universe_run(
+            db,
+            asset_class="stock",
+            venue="alpaca",
+            trade_date=trade_date,
+            source="phase16",
+            status="resolved",
+            symbols=[
+                UniverseSymbolRecord(
+                    symbol=symbol,
+                    rank=index,
+                    source="phase16",
+                    venue="alpaca",
+                    asset_class="stock",
+                    selection_reason="validation_seed",
+                    payload={"seeded": True},
+                )
+                for index, symbol in enumerate(symbols, start=1)
+            ],
+            resolved_at=PHASE16_UNIVERSE_RESOLVED_AT,
+            payload={"seeded": True},
+        )
+
+
+def _phase16_trade_dates() -> tuple[date, ...]:
+    ordered = [
+        trading_date_for_now(PHASE16_STRATEGY_BEFORE_NOW),
+        trading_date_for_now(None),
+    ]
+    deduped: list[date] = []
+    for value in ordered:
+        if value not in deduped:
+            deduped.append(value)
+    return tuple(deduped)
 
 
 def _seed_stock_ready_candles(db: Session, *, symbol: str) -> None:
@@ -320,7 +351,6 @@ def _append_stock_price(db: Session, *, symbol: str, close: Decimal, timestamp: 
 
 
 def _seed_stock_accounts(db: Session) -> None:
-    as_of = datetime(2026, 3, 14, 15, 0, tzinfo=UTC)
     db.add(
         AccountSnapshot(
             account_scope="total",
@@ -331,7 +361,7 @@ def _seed_stock_accounts(db: Session) -> None:
             buying_power=Decimal("1000"),
             realized_pnl=Decimal("0"),
             unrealized_pnl=Decimal("0"),
-            as_of=as_of,
+            as_of=PHASE16_ACCOUNT_AS_OF,
         )
     )
     db.add(
@@ -344,7 +374,7 @@ def _seed_stock_accounts(db: Session) -> None:
             buying_power=Decimal("1000"),
             realized_pnl=Decimal("0"),
             unrealized_pnl=Decimal("0"),
-            as_of=as_of,
+            as_of=PHASE16_ACCOUNT_AS_OF,
         )
     )
     db.commit()

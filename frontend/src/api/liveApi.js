@@ -13,6 +13,9 @@ import {
 const DEFAULT_API_ORIGIN = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8101').replace(/\/$/, '');
 export const API_BASE = `${DEFAULT_API_ORIGIN}/api/v1`;
 
+const STOCK_TIMEFRAMES = ['1h', '15m', '5m', '1d'];
+const CRYPTO_TIMEFRAMES = ['4h', '1h', '15m', '1d'];
+
 const CONTROL_MAP = {
   refresh_universe: { path: '/controls/universe/run-once', buildPayload: () => ({ asset_class: 'all', force: true }) },
   backfill_candles: { path: '/controls/candles/backfill', buildPayload: () => ({ asset_class: 'all', force: true }) },
@@ -37,18 +40,34 @@ async function readJson(response) {
 }
 
 async function fetchJson(path, options = {}) {
-  const response = await fetch(makeUrl(path), {
-    headers: { Accept: 'application/json', ...(options.headers || {}) },
-    ...options,
-  });
+  const { timeoutMs = /^\/controls\//.test(path) ? 60000 : 15000, ...requestOptions } = options;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!response.ok) {
-    const error = new Error(`${response.status} ${path}`);
-    error.status = response.status;
+  try {
+    const response = await fetch(makeUrl(path), {
+      headers: { Accept: 'application/json', ...(requestOptions.headers || {}) },
+      signal: controller.signal,
+      ...requestOptions,
+    });
+
+    if (!response.ok) {
+      const error = new Error(`${response.status} ${path}`);
+      error.status = response.status;
+      throw error;
+    }
+
+    return readJson(response);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      const timeoutError = new Error(`Request timed out for ${path}`);
+      timeoutError.status = 408;
+      throw timeoutError;
+    }
     throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
   }
-
-  return readJson(response);
 }
 
 async function tryFetch(path, options = {}) {
@@ -68,6 +87,14 @@ async function firstHealthy(paths) {
   return { ok: false, data: null, path: paths[0], error: `Unable to reach ${paths.join(' or ')}` };
 }
 
+function timeframePaths(prefix, timeframes) {
+  return timeframes.map((timeframe) => `${prefix}?timeframe=${encodeURIComponent(timeframe)}`);
+}
+
+function mergeOkData(results) {
+  return results.flatMap((result) => (result.ok && Array.isArray(result.data) ? result.data : []));
+}
+
 export async function loadLiveSnapshot() {
   const [
     healthRes,
@@ -77,12 +104,12 @@ export async function loadLiveSnapshot() {
     eventsRes,
     stockUniverseRes,
     cryptoUniverseRes,
-    stockStrategiesRes,
-    cryptoStrategiesRes,
-    stockPositionsRes,
-    cryptoPositionsRes,
-    stockRiskRes,
-    cryptoRiskRes,
+    stockStrategyResults,
+    cryptoStrategyResults,
+    stockPositionResults,
+    cryptoPositionResults,
+    stockRiskResults,
+    cryptoRiskResults,
     totalAccountRes,
     stockAccountRes,
     cryptoAccountRes,
@@ -94,12 +121,12 @@ export async function loadLiveSnapshot() {
     tryFetch('/system-events?limit=40'),
     tryFetch('/universe/stock/current'),
     tryFetch('/universe/crypto/current'),
-    tryFetch('/strategy/stock/current?timeframe=1h'),
-    tryFetch('/strategy/crypto/current?timeframe=1h'),
-    tryFetch('/positions/stock/current?timeframe=1h'),
-    tryFetch('/positions/crypto/current?timeframe=1h'),
-    tryFetch('/risk/stock/current?timeframe=1h'),
-    tryFetch('/risk/crypto/current?timeframe=1h'),
+    Promise.all(timeframePaths('/strategy/stock/current', STOCK_TIMEFRAMES).map((path) => tryFetch(path))),
+    Promise.all(timeframePaths('/strategy/crypto/current', CRYPTO_TIMEFRAMES).map((path) => tryFetch(path))),
+    Promise.all(timeframePaths('/positions/stock/current', STOCK_TIMEFRAMES).map((path) => tryFetch(path))),
+    Promise.all(timeframePaths('/positions/crypto/current', CRYPTO_TIMEFRAMES).map((path) => tryFetch(path))),
+    Promise.all(timeframePaths('/risk/stock/current', STOCK_TIMEFRAMES).map((path) => tryFetch(path))),
+    Promise.all(timeframePaths('/risk/crypto/current', CRYPTO_TIMEFRAMES).map((path) => tryFetch(path))),
     tryFetch('/account-snapshots/latest/total'),
     tryFetch('/account-snapshots/latest/stock'),
     tryFetch('/account-snapshots/latest/crypto'),
@@ -111,14 +138,15 @@ export async function loadLiveSnapshot() {
     throw new Error('Backend live endpoints are unavailable. I could not verify live UI data because the API did not answer from the uploaded project.');
   }
 
+  const degraded = successfulEssential < mustHave.length;
   const settings = normalizeSettings(settingsRes.data || [], runtimeRes.data || null, controlsRes.data || null);
-  const universe = normalizeUniverse(stockUniverseRes.data || [], cryptoUniverseRes.data || []);
-  const strategies = normalizeStrategies(stockStrategiesRes.data || [], cryptoStrategiesRes.data || []);
-  const positions = normalizePositions(stockPositionsRes.data || [], cryptoPositionsRes.data || []);
+  const strategies = normalizeStrategies(mergeOkData(stockStrategyResults), mergeOkData(cryptoStrategyResults));
+  const universe = normalizeUniverse(stockUniverseRes.data || [], cryptoUniverseRes.data || [], strategies);
+  const positions = normalizePositions(mergeOkData(stockPositionResults), mergeOkData(cryptoPositionResults));
   const logs = normalizeLogs(eventsRes.data || []);
   const riskRows = {
-    stock: Array.isArray(stockRiskRes.data) ? stockRiskRes.data : [],
-    crypto: Array.isArray(cryptoRiskRes.data) ? cryptoRiskRes.data : [],
+    stock: mergeOkData(stockRiskResults),
+    crypto: mergeOkData(cryptoRiskResults),
   };
   const accountSnapshots = mergeAccountSnapshots(totalAccountRes.data, stockAccountRes.data, cryptoAccountRes.data);
 
@@ -142,6 +170,7 @@ export async function loadLiveSnapshot() {
       mode: controlsRes.data?.default_mode || 'unknown',
       killSwitchEnabled: Boolean(controlsRes.data?.kill_switch_enabled),
       systemHalted: Boolean(controlsRes.data?.kill_switch_enabled),
+      degraded,
       raw: healthRes.data || {},
     },
     summary,
@@ -169,12 +198,12 @@ export async function loadLiveSnapshot() {
       events: eventsRes,
       stockUniverse: stockUniverseRes,
       cryptoUniverse: cryptoUniverseRes,
-      stockStrategies: stockStrategiesRes,
-      cryptoStrategies: cryptoStrategiesRes,
-      stockPositions: stockPositionsRes,
-      cryptoPositions: cryptoPositionsRes,
-      stockRisk: stockRiskRes,
-      cryptoRisk: cryptoRiskRes,
+      stockStrategies: stockStrategyResults,
+      cryptoStrategies: cryptoStrategyResults,
+      stockPositions: stockPositionResults,
+      cryptoPositions: cryptoPositionResults,
+      stockRisk: stockRiskResults,
+      cryptoRisk: cryptoRiskResults,
       totalAccount: totalAccountRes,
       stockAccount: stockAccountRes,
       cryptoAccount: cryptoAccountRes,

@@ -95,8 +95,13 @@ button {
 .main-stage {
   position: relative;
   z-index: 1;
-  padding: 26px 28px 28px 8px;
+  padding: 26px 28px 28px 18px;
   overflow: auto;
+}
+
+.main-stage > * {
+  width: min(100%, 1420px);
+  margin-inline: auto;
 }
 
 .sidebar {
@@ -218,6 +223,10 @@ h3 { font-size: 1.15rem; }
 .action-button,
 .drawer-close,
 .banner button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   border: 1px solid rgba(117, 240, 255, 0.22);
   border-radius: 16px;
   background: rgba(5, 18, 34, 0.76);
@@ -228,6 +237,7 @@ h3 { font-size: 1.15rem; }
 .nav-button {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 10px;
   padding: 14px 16px;
   text-align: left;
@@ -322,6 +332,12 @@ input[type='number'] {
   grid-template-columns: 1.2fr 1fr;
 }
 
+.dashboard-grid,
+.settings-page-grid {
+  width: min(100%, 1360px);
+  margin-inline: auto;
+}
+
 .two-column-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -350,6 +366,7 @@ input[type='number'] {
 .mini-stat,
 .mini-stat-tile {
   min-height: 110px;
+  padding: 16px;
 }
 
 .metric-value {
@@ -415,6 +432,33 @@ input[type='number'] {
   letter-spacing: 0.08em;
 }
 
+.table-wrap.centered-table th,
+.table-wrap.centered-table td {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.table-wrap.universe-table table,
+.table-wrap.strategy-table table {
+  table-layout: auto;
+}
+
+.table-wrap.universe-table th:first-child,
+.table-wrap.universe-table td:first-child {
+  width: 72px;
+  min-width: 72px;
+}
+
+.table-wrap.universe-table th:last-child,
+.table-wrap.universe-table td:last-child {
+  width: 152px;
+  min-width: 152px;
+}
+
+.table-wrap.universe-table .status-pill {
+  min-width: 112px;
+}
+
 .clickable-row {
   cursor: pointer;
 }
@@ -452,6 +496,11 @@ input[type='number'] {
 .tone-violet { color: #bda9ff; }
 .tone-neutral { color: var(--text); }
 .tone-info { color: var(--cyan); }
+
+.numeric-tone {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
 
 .settings-list {
   display: grid;
@@ -692,6 +741,36 @@ input[type='number'] {
 .setting-input-stack {
   width: min(280px, 100%);
   justify-items: end;
+}
+
+.settings-command-grid .panel-header,
+.settings-command-grid .quick-row,
+.routing-banner .panel-header,
+.routing-card,
+.setting-input-stack,
+.setting-input-wrap {
+  text-align: center;
+}
+
+.settings-command-grid .panel-header,
+.routing-banner .panel-header {
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.settings-command-grid .quick-row > div:first-child,
+.routing-card {
+  margin-inline: auto;
+}
+
+.setting-input-stack {
+  justify-items: center;
+}
+
+.settings-toolbar .topbar-controls {
+  justify-content: center;
 }
 
 .hidden-input {

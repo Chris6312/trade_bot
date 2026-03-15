@@ -68,6 +68,14 @@ const DEFAULT_SETTINGS_CATALOG = [
 
 const SETTINGS_CATALOG_BY_KEY = new Map(DEFAULT_SETTINGS_CATALOG.map((item, index) => [item.key, { ...item, order: index }]));
 
+const TIMEFRAME_SECONDS = {
+  '5m': 5 * 60,
+  '15m': 15 * 60,
+  '1h': 60 * 60,
+  '4h': 4 * 60 * 60,
+  '1d': 24 * 60 * 60,
+};
+
 export function toNumber(value) {
   if (value == null || value === '') return null;
   const numeric = Number(value);
@@ -230,10 +238,11 @@ export function normalizeSettings(settings = [], runtimeSnapshot = null, control
     .sort((left, right) => (left.order - right.order) || left.label.localeCompare(right.label));
 }
 
-export function normalizeUniverse(stockRows = [], cryptoRows = []) {
+export function normalizeUniverse(stockRows = [], cryptoRows = [], strategies = []) {
+  const strategyMap = buildStrategyReadinessMap(strategies);
   return {
-    stocks: normalizeUniverseRows(stockRows, 'Stock'),
-    crypto: normalizeUniverseRows(cryptoRows, 'Crypto'),
+    stocks: normalizeUniverseRows(stockRows, 'Stock', strategyMap),
+    crypto: normalizeUniverseRows(cryptoRows, 'Crypto', strategyMap),
   };
 }
 
@@ -256,47 +265,134 @@ function resolveDisplayMeta(row, assetClass) {
   };
 }
 
-function normalizeUniverseRows(rows, assetClass) {
-  return rows.map((row, index) => {
-    const payload = row.payload && typeof row.payload === 'object' ? row.payload : {};
-    const display = resolveDisplayMeta(row, assetClass);
-    const blockedReasons = stringifyList(payload.blocked_reasons);
-    const selectionReason = row.selection_reason || payload.selection_reason || '';
-    const blockReason = payload.block_reason || blockedReasons || '';
-    const eligibility = payload.eligibility
-      || (blockReason ? 'Blocked' : (payload.last_price != null || selectionReason ? 'Eligible' : 'Selected'));
+function buildStrategyReadinessMap(strategies = []) {
+  return (Array.isArray(strategies) ? strategies : []).reduce((acc, row) => {
+    const assetClass = String(row.assetClass || '').trim();
+    const keys = [row.rawSymbol, row.marketSymbol, row.symbol]
+      .filter(Boolean)
+      .map((symbol) => `${assetClass}|${String(symbol).toUpperCase()}`);
 
-    return {
-      id: row.id || `${assetClass}-${row.symbol || index}`,
-      symbol: display.displaySymbol,
-      displayName: display.displayName,
-      marketSymbol: display.marketSymbol,
-      rawSymbol: row.symbol || '—',
-      assetClass,
-      rank: row.rank ?? index + 1,
-      lastPrice: toNumber(payload.last_price ?? payload.price ?? payload.last),
-      changePct: toPercent(payload.change_pct ?? payload.daily_change_pct ?? payload.changePercent),
-      lastCandleAt: payload.last_candle_at || null,
-      liquidityScore: toNumber(payload.liquidity_score ?? payload.liquidity),
-      participationScore: toNumber(payload.participation_score ?? payload.participation),
-      trendScore: toNumber(payload.trend_score ?? payload.trend),
-      stabilityScore: toNumber(payload.stability_score ?? payload.stability),
-      compositeScore: toNumber(payload.composite_score ?? payload.score),
-      eligibility,
-      selectionReason,
-      blockReason,
-      raw: row,
-    };
-  });
+    for (const key of new Set(keys)) {
+      acc[key] = [...(acc[key] || []), row];
+    }
+    return acc;
+  }, {});
+}
+
+function deriveUniverseStrategyState(strategyRows = [], fallbackEligibility = 'Selected', fallbackBlockReason = '') {
+  if (!strategyRows.length) return { eligibility: fallbackEligibility, blockReason: fallbackBlockReason };
+
+  const readyRows = strategyRows.filter((row) => String(row.status || '').toLowerCase() === 'ready');
+  if (readyRows.length) return { eligibility: 'Eligible', blockReason: '' };
+
+  const blockers = strategyRows
+    .flatMap((row) => String(row.blocker || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean));
+
+  const uniqueBlockers = [...new Set(blockers)];
+  const hasOnlyDataGaps = uniqueBlockers.length > 0 && uniqueBlockers.every((reason) => /missing_feature_snapshot|insufficient_candles|vwap_missing|data_stale|feature_stale/i.test(reason));
+  const hasHistoryGap = uniqueBlockers.some((reason) => /not_enough_history|insufficient_candles/i.test(reason));
+  const hasDisabled = uniqueBlockers.some((reason) => /strategy_disabled/i.test(reason));
+
+  if (hasDisabled) {
+    return { eligibility: 'Disabled', blockReason: uniqueBlockers.join(', ') || fallbackBlockReason };
+  }
+  if (hasHistoryGap) {
+    return { eligibility: 'Not Enough History', blockReason: uniqueBlockers.join(', ') || fallbackBlockReason };
+  }
+  if (hasOnlyDataGaps) {
+    return { eligibility: 'Data Stale', blockReason: uniqueBlockers.join(', ') || fallbackBlockReason };
+  }
+
+  return {
+    eligibility: 'Blocked',
+    blockReason: uniqueBlockers.join(', ') || fallbackBlockReason || strategyRows[0]?.explanation || '',
+  };
+}
+
+function safeDate(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function deriveNextReevaluation(explicitValue, evaluatedAt, timeframe) {
+  if (explicitValue) return explicitValue;
+
+  const base = safeDate(evaluatedAt);
+  const timeframeSeconds = TIMEFRAME_SECONDS[String(timeframe || '').toLowerCase()];
+  if (!base || !timeframeSeconds) return '—';
+
+  const epochSeconds = Math.floor(base.getTime() / 1000);
+  const nextBoundarySeconds = (Math.floor(epochSeconds / timeframeSeconds) + 1) * timeframeSeconds + 20;
+  return new Date(nextBoundarySeconds * 1000).toISOString();
+}
+
+function normalizeUniverseRows(rows, assetClass, strategyMap = {}) {
+  return rows
+    .map((row, index) => {
+      const payload = row.payload && typeof row.payload === 'object' ? row.payload : {};
+      const display = resolveDisplayMeta(row, assetClass);
+      const blockedReasons = stringifyList(payload.blocked_reasons);
+      const selectionReason = row.selection_reason || payload.selection_reason || '';
+      const fallbackBlockReason = payload.block_reason || blockedReasons || '';
+      const fallbackEligibility = payload.eligibility
+        || (fallbackBlockReason ? 'Blocked' : (payload.last_price != null || selectionReason ? 'Eligible' : 'Selected'));
+      const strategyRows = strategyMap[`${assetClass}|${String(row.symbol || '').toUpperCase()}`]
+        || strategyMap[`${assetClass}|${String(display.marketSymbol || '').toUpperCase()}`]
+        || strategyMap[`${assetClass}|${String(display.displaySymbol || '').toUpperCase()}`]
+        || [];
+      const derivedState = deriveUniverseStrategyState(strategyRows, fallbackEligibility, fallbackBlockReason);
+      const rank = toNumber(row.rank) ?? index + 1;
+
+      return {
+        id: row.id || `${assetClass}-${row.symbol || index}`,
+        symbol: display.displaySymbol,
+        displayName: display.displayName,
+        marketSymbol: display.marketSymbol,
+        rawSymbol: row.symbol || '—',
+        assetClass,
+        rank,
+        sourceRank: rank,
+        lastPrice: toNumber(payload.last_price ?? payload.price ?? payload.last),
+        changePct: toPercent(payload.change_pct ?? payload.daily_change_pct ?? payload.changePercent),
+        lastCandleAt: payload.last_candle_at || null,
+        liquidityScore: toNumber(payload.liquidity_score ?? payload.liquidity),
+        participationScore: toNumber(payload.participation_score ?? payload.participation),
+        trendScore: toNumber(payload.trend_score ?? payload.trend),
+        stabilityScore: toNumber(payload.stability_score ?? payload.stability),
+        compositeScore: toNumber(payload.composite_score ?? payload.score),
+        eligibility: derivedState.eligibility,
+        selectionReason,
+        blockReason: derivedState.blockReason,
+        raw: row,
+      };
+    })
+    .sort((left, right) => (left.sourceRank - right.sourceRank) || left.symbol.localeCompare(right.symbol))
+    .map((row, index) => ({ ...row, rank: index + 1 }));
 }
 
 export function normalizeStrategies(stockRows = [], cryptoRows = []) {
   return [...normalizeStrategyRows(stockRows, 'Stock'), ...normalizeStrategyRows(cryptoRows, 'Crypto')];
 }
 
+function classifyStrategyStatus(row) {
+  const reasons = Array.isArray(row?.blocked_reasons) ? row.blocked_reasons.map((item) => String(item)) : [];
+  if ((row?.status || '').toLowerCase() === 'ready') return 'Ready';
+  if (reasons.includes('regime_blocked') || reasons.includes('strategy_disabled')) return 'Blocked';
+  if (reasons.includes('regime_unavailable')) return 'Waiting on regime';
+  if (reasons.some((reason) => ['missing_feature_snapshot', 'insufficient_candles', 'vwap_missing'].includes(reason))) {
+    return 'Waiting on data';
+  }
+  return 'Not ready';
+}
+
 function normalizeStrategyRows(rows, assetClass) {
   return rows.map((row) => {
     const display = resolveDisplayMeta(row, assetClass);
+    const evaluatedAt = row.computed_at || row.candidate_timestamp || null;
     return {
       id: row.id || `${assetClass}-${row.symbol}-${row.strategy_name}`,
       symbol: display.displaySymbol,
@@ -304,20 +400,20 @@ function normalizeStrategyRows(rows, assetClass) {
       marketSymbol: display.marketSymbol,
       rawSymbol: row.symbol || '—',
       assetClass,
-    primaryStrategy: formatSettingLabel(row.strategy_name || '—').replace(/\./g, ' '),
-    secondaryStrategies: stringifyList(row.payload?.secondary_strategies),
-    strategyRankScore: toNumber(row.composite_score),
-    readinessScore: toNumber(row.readiness_score),
-    status: row.status || 'unknown',
-    blocker: stringifyList(row.blocked_reasons),
-    timeframe: row.timeframe || '—',
-    regime: row.regime || '—',
-    evaluatedAt: row.computed_at || row.candidate_timestamp || null,
-    thresholdsPassed: stringifyList(row.payload?.thresholds_passed),
-    thresholdsFailed: stringifyList(row.blocked_reasons || row.payload?.thresholds_failed),
-    regimeRequirement: row.entry_policy || '—',
-    nextReevaluation: row.payload?.next_reevaluation || '—',
-    previousSignalAttempts: stringifyList(row.payload?.previous_signal_attempts),
+      primaryStrategy: formatSettingLabel(row.strategy_name || '—').replace(/\./g, ' '),
+      secondaryStrategies: stringifyList(row.payload?.secondary_strategies),
+      strategyRankScore: toNumber(row.composite_score),
+      readinessScore: toNumber(row.readiness_score),
+      status: classifyStrategyStatus(row),
+      blocker: stringifyList(row.blocked_reasons),
+      timeframe: row.timeframe || '—',
+      regime: row.regime || '—',
+      evaluatedAt,
+      thresholdsPassed: stringifyList(row.payload?.thresholds_passed),
+      thresholdsFailed: stringifyList(row.blocked_reasons || row.payload?.thresholds_failed),
+      regimeRequirement: row.entry_policy || '—',
+      nextReevaluation: deriveNextReevaluation(row.payload?.next_reevaluation, evaluatedAt, row.timeframe),
+      previousSignalAttempts: stringifyList(row.payload?.previous_signal_attempts),
       explanation: row.decision_reason || stringifyList(row.blocked_reasons) || 'No explanation returned yet.',
       raw: row,
     };

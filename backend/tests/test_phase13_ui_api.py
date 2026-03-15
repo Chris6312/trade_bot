@@ -10,16 +10,27 @@ from backend.app.services.universe_service import trading_date_for_now
 
 def test_phase13_support_routes_expose_ui_state(client) -> None:
     with get_session_factory()() as db:
-        now = datetime.now(UTC)
-        run = UniverseRun(asset_class="stock", venue="alpaca", trade_date=trading_date_for_now(now), source="ai", status="resolved", resolved_at=now, payload={"resolution": "ai"})
+        now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        trade_date = trading_date_for_now(now)
+        run = UniverseRun(asset_class="stock", venue="alpaca", trade_date=trade_date, source="ai", status="resolved", resolved_at=now, payload={"resolution": "ai"})
         db.add(run)
         db.flush()
-        db.add(UniverseConstituent(universe_run_id=run.id, asset_class="stock", venue="alpaca", symbol="AAPL", rank=1, source="ai", selection_reason="ranked by ai", payload={"ai_rank_score": 0.91}))
-        db.add(CandleSyncState(asset_class="stock", venue="alpaca", symbol="AAPL", timeframe="1h", last_synced_at=now, last_candle_at=now, last_status="synced", last_error=None))
-        db.add(CandleFreshness(asset_class="stock", venue="alpaca", symbol="AAPL", timeframe="1h", last_synced_at=now, last_candle_at=now, fresh_through=now))
         db.add_all([
-            Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="1h", timestamp=now.replace(minute=0, second=0, microsecond=0), open=100, high=102, low=99, close=101, volume=1000, vwap=101, trade_count=10),
-            Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="1h", timestamp=now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1), open=101, high=104, low=100, close=103, volume=1200, vwap=103, trade_count=12),
+            UniverseConstituent(universe_run_id=run.id, asset_class="stock", venue="alpaca", symbol="MSFT", rank=1, source="ai", selection_reason="ranked first", payload={"ai_rank_score": 0.95}),
+            UniverseConstituent(universe_run_id=run.id, asset_class="stock", venue="alpaca", symbol="AAPL", rank=2, source="ai", selection_reason="ranked second", payload={"ai_rank_score": 0.91}),
+        ])
+        db.add_all([
+            CandleSyncState(asset_class="stock", venue="alpaca", symbol="AAPL", timeframe="1h", last_synced_at=now, last_candle_at=now, last_status="synced", last_error=None),
+            CandleFreshness(asset_class="stock", venue="alpaca", symbol="AAPL", timeframe="1h", last_synced_at=now, last_candle_at=now, fresh_through=now),
+        ])
+        db.add_all([
+            Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="1h", timestamp=now - timedelta(hours=26), open=99, high=101, low=98, close=100, volume=900, vwap=100, trade_count=9),
+            Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="1h", timestamp=now - timedelta(hours=2), open=100, high=102, low=99, close=101, volume=1000, vwap=101, trade_count=10),
+            Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="1h", timestamp=now - timedelta(hours=1), open=101, high=104, low=100, close=103, volume=1200, vwap=103, trade_count=12),
+            Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="5m", timestamp=now - timedelta(hours=25), open=99, high=101, low=98, close=100, volume=950, vwap=100, trade_count=9),
+            Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="5m", timestamp=now - timedelta(minutes=5), open=103, high=105, low=102, close=104, volume=1250, vwap=104, trade_count=13),
+            Candle(asset_class="stock", venue="alpaca", source="test", symbol="MSFT", timeframe="1h", timestamp=now - timedelta(hours=25), open=198, high=201, low=197, close=200, volume=1100, vwap=200, trade_count=11),
+            Candle(asset_class="stock", venue="alpaca", source="test", symbol="MSFT", timeframe="1h", timestamp=now - timedelta(hours=1), open=200, high=207, low=199, close=205, volume=1300, vwap=205, trade_count=13),
         ])
         db.add(FeatureSyncState(asset_class="stock", venue="alpaca", symbol="AAPL", timeframe="1h", last_computed_at=now, last_candle_at=now, feature_count=20, last_status="computed", last_error=None))
         db.add(Setting(key="controls.kill_switch_enabled", value="false", value_type="bool"))
@@ -28,10 +39,12 @@ def test_phase13_support_routes_expose_ui_state(client) -> None:
 
     universe_response = client.get("/api/v1/universe/stock/current")
     assert universe_response.status_code == 200
-    payload = universe_response.json()[0]
-    assert payload["symbol"] == "AAPL"
-    assert payload["payload"]["last_price"] == 103.0
-    assert round(payload["payload"]["change_pct"], 2) == 1.98
+    payload = universe_response.json()
+    assert [row["symbol"] for row in payload] == ["MSFT", "AAPL"]
+    assert payload[1]["payload"]["last_price"] == 104.0
+    assert round(payload[1]["payload"]["change_pct"], 2) == 4.0
+    assert payload[1]["payload"]["change_window"] == "24h"
+    assert payload[1]["payload"]["price_timeframe"] == "5m"
 
     candle_response = client.get("/api/v1/data/candles/stock/sync-state")
     assert candle_response.status_code == 200
@@ -48,6 +61,27 @@ def test_phase13_support_routes_expose_ui_state(client) -> None:
     events_response = client.get("/api/v1/system-events")
     assert events_response.status_code == 200
     assert events_response.json()[0]["event_type"] == "control.refresh"
+
+
+def test_phase13_universe_change_pct_ignores_stale_intraday_baseline(client) -> None:
+    with get_session_factory()() as db:
+        now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+        trade_date = trading_date_for_now(now)
+        run = UniverseRun(asset_class="crypto", venue="kraken", trade_date=trade_date, source="static", status="resolved", resolved_at=now, payload={"resolution": "static"})
+        db.add(run)
+        db.flush()
+        db.add(UniverseConstituent(universe_run_id=run.id, asset_class="crypto", venue="kraken", symbol="XBTUSD", rank=1, source="static", selection_reason="top pair", payload={}))
+        db.add_all([
+            Candle(asset_class="crypto", venue="kraken", source="test", symbol="XBTUSD", timeframe="15m", timestamp=now - timedelta(days=3), open=95000, high=96000, low=94000, close=95500, volume=900, vwap=95500, trade_count=90),
+            Candle(asset_class="crypto", venue="kraken", source="test", symbol="XBTUSD", timeframe="15m", timestamp=now - timedelta(minutes=15), open=100000, high=101000, low=99500, close=100500, volume=1200, vwap=100500, trade_count=120),
+        ])
+        db.commit()
+
+    response = client.get("/api/v1/universe/crypto/current")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload[0]["payload"]["last_price"] == 100500.0
+    assert payload[0]["payload"]["change_pct"] is None
 
 
 def test_phase13_control_snapshot_and_toggle(client) -> None:
