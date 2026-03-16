@@ -24,6 +24,7 @@ def test_phase13_support_routes_expose_ui_state(client) -> None:
             CandleFreshness(asset_class="stock", venue="alpaca", symbol="AAPL", timeframe="1h", last_synced_at=now, last_candle_at=now, fresh_through=now),
         ])
         db.add_all([
+            Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="1d", timestamp=now - timedelta(days=1), open=99, high=101, low=98, close=100, volume=1500, vwap=100, trade_count=15),
             Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="1h", timestamp=now - timedelta(hours=26), open=99, high=101, low=98, close=100, volume=900, vwap=100, trade_count=9),
             Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="1h", timestamp=now - timedelta(hours=2), open=100, high=102, low=99, close=101, volume=1000, vwap=101, trade_count=10),
             Candle(asset_class="stock", venue="alpaca", source="test", symbol="AAPL", timeframe="1h", timestamp=now - timedelta(hours=1), open=101, high=104, low=100, close=103, volume=1200, vwap=103, trade_count=12),
@@ -43,7 +44,7 @@ def test_phase13_support_routes_expose_ui_state(client) -> None:
     assert [row["symbol"] for row in payload] == ["MSFT", "AAPL"]
     assert payload[1]["payload"]["last_price"] == 104.0
     assert round(payload[1]["payload"]["change_pct"], 2) == 4.0
-    assert payload[1]["payload"]["change_window"] == "24h"
+    assert payload[1]["payload"]["change_window"] == "prev_close"
     assert payload[1]["payload"]["price_timeframe"] == "5m"
 
     candle_response = client.get("/api/v1/data/candles/stock/sync-state")

@@ -145,15 +145,28 @@ function startOfNextTimeframeBoundary(date, timeframe) {
 }
 
 function computeNextReevaluation(timeframe, candidateTimestamp, evaluatedAt, backendValue) {
-  const anchor = toDate(candidateTimestamp) || toDate(evaluatedAt);
+  const candidateDate = toDate(candidateTimestamp);
+  const evaluatedDate = toDate(evaluatedAt);
   const backendDate = toDate(backendValue);
+
+  const anchor = evaluatedDate || candidateDate;
   if (!anchor) return backendDate?.toISOString() || backendValue || null;
 
-  const nextBoundary = startOfNextTimeframeBoundary(anchor, timeframe || '15m');
+  let nextBoundary = startOfNextTimeframeBoundary(anchor, timeframe || '15m');
   nextBoundary.setUTCSeconds(20, 0);
 
-  if (!backendDate) return nextBoundary.toISOString();
-  if (Math.abs(backendDate.getTime() - nextBoundary.getTime()) <= 1000) return backendDate.toISOString();
+  while (evaluatedDate && nextBoundary.getTime() <= evaluatedDate.getTime()) {
+    nextBoundary = startOfNextTimeframeBoundary(
+      new Date(nextBoundary.getTime() + 1000),
+      timeframe || '15m',
+    );
+    nextBoundary.setUTCSeconds(20, 0);
+  }
+
+  if (backendDate && backendDate.getTime() > evaluatedDate?.getTime()) {
+    return backendDate.toISOString();
+  }
+
   return nextBoundary.toISOString();
 }
 
@@ -366,7 +379,7 @@ function normalizeUniverseRows(rows, assetClass) {
         assetClass,
         rank,
         lastPrice: toNumber(payload.last_price ?? payload.price ?? payload.last),
-        changePct: toPercent(payload.change_pct ?? payload.daily_change_pct ?? payload.changePercent),
+        changePct: toNumber(payload.change_pct ?? payload.daily_change_pct ?? payload.changePercent),
         lastCandleAt: payload.last_candle_at || null,
         liquidityScore: toNumber(payload.liquidity_score ?? payload.liquidity),
         participationScore: toNumber(payload.participation_score ?? payload.participation),

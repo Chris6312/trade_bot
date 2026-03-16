@@ -978,6 +978,7 @@ function UniversePage({ universe, onOpen, loading }) {
       <article className="panel-glass table-panel">
         <PanelHeader title="Stock universe" subtitle={loading ? 'Refreshing live rows…' : 'Updates on stock 5m candle refresh'} />
         <SimpleTable
+		  className="compact-table universe-table"
           columns={['Rank', 'Symbol', 'Price', 'Change', 'Eligibility']}
           rows={universe.stocks.map((row) => [
             row.rank,
@@ -994,6 +995,7 @@ function UniversePage({ universe, onOpen, loading }) {
       <article className="panel-glass table-panel">
         <PanelHeader title="Crypto universe" subtitle={loading ? 'Refreshing live rows…' : 'Updates on crypto 15m candle refresh'} />
         <SimpleTable
+		  className="compact-table universe-table"
           columns={['Rank', 'Pair', 'Price', 'Change', 'Eligibility']}
           rows={universe.crypto.map((row) => [
             row.rank,
@@ -1038,7 +1040,7 @@ function StrategiesPage({ strategies, onOpen, loading }) {
           )}
         />
         <SimpleTable
-          className="strategy-table"
+          className="compact-table strategy-table"
           columns={['Symbol', 'Strategy / cadence', 'Readiness', 'Status', 'Regime']}
           rows={stocks.map((row) => [
             <StrategySymbolCell row={row} />,
@@ -1067,7 +1069,7 @@ function StrategiesPage({ strategies, onOpen, loading }) {
           )}
         />
         <SimpleTable
-          className="strategy-table"
+          className="compact-table strategy-table"
           columns={['Symbol', 'Strategy / cadence', 'Readiness', 'Status', 'Regime']}
           rows={crypto.map((row) => [
             <StrategySymbolCell row={row} />,
@@ -1139,6 +1141,7 @@ function PositionsPage({ positions, onOpen, loading }) {
       <article className="panel-glass table-panel full-span">
         <PanelHeader title="Positions" subtitle={loading ? 'Refreshing broker state…' : 'Live positions and reconciliation state'} />
         <SimpleTable
+		  className="compact-table positions-table"
           columns={['Symbol', 'Asset', 'Venue', 'Account', 'Qty', 'UPnL', 'Stop', 'Status']}
           rows={positions.map((row) => [
             row.symbol,
@@ -1164,6 +1167,7 @@ function ActivityPage({ logs, onOpen, loading }) {
       <article className="panel-glass table-panel full-span">
         <PanelHeader title="Activity log" subtitle={loading ? 'Polling system events…' : 'Frontend reflects backend event truth'} />
         <SimpleTable
+		  className="compact-table activity-table"
           columns={['Time', 'Level', 'Component', 'Action', 'Message']}
           rows={logs.map((row) => [
             formatTime(row.timestamp),

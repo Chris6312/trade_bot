@@ -25,15 +25,49 @@ DEFAULT_POLL_SECONDS = 5.0
 
 
 @dataclass(slots=True, frozen=True)
+class ScheduledStageSummary:
+    status: str
+    skipped_reason: str | None = None
+    upserted_bars: int = 0
+    computed_snapshots: int = 0
+    regime: str | None = None
+    entry_policy: str | None = None
+    symbol_count: int = 0
+    evaluated_rows: int = 0
+    blocked_rows: int = 0
+    ready_rows: int = 0
+
+
+@dataclass(slots=True, frozen=True)
 class ScheduledPipelineSummary:
     asset_class: str
     timeframe: str
     close_at: datetime
-    upserted_bars: int
-    evaluated_rows: int
-    blocked_rows: int
-    ready_rows: int
+    candle: ScheduledStageSummary
+    feature: ScheduledStageSummary
+    regime: ScheduledStageSummary
+    strategy: ScheduledStageSummary
     skipped_reason: str | None = None
+
+    @property
+    def pipeline_status(self) -> str:
+        return "skipped" if self.skipped_reason is not None else "executed"
+
+    @property
+    def upserted_bars(self) -> int:
+        return self.candle.upserted_bars
+
+    @property
+    def evaluated_rows(self) -> int:
+        return self.strategy.evaluated_rows
+
+    @property
+    def blocked_rows(self) -> int:
+        return self.strategy.blocked_rows
+
+    @property
+    def ready_rows(self) -> int:
+        return self.strategy.ready_rows
 
 
 class SchedulerWorker:
@@ -96,7 +130,7 @@ class SchedulerWorker:
                 try:
                     with self._loop_lock:
                         self.run_cycle()
-                except Exception as exc:  # pragma: no cover - defensive logging path
+                except Exception as exc:  # pragma: no cover
                     logger.exception("scheduler_worker_cycle_failed")
                     self._emit_failure_event(exc)
         finally:
@@ -111,7 +145,7 @@ class SchedulerWorker:
                             payload=None,
                             commit=True,
                         )
-                    except Exception:  # pragma: no cover - shutdown logging guard
+                    except Exception:  # pragma: no cover
                         logger.exception("scheduler_worker_stop_event_failed")
                     self._release_advisory_lock(self._lock_session)
                     self._has_advisory_lock = False
@@ -131,12 +165,15 @@ class SchedulerWorker:
             stock_symbols = list_universe_symbols(db, asset_class="stock", trade_date=stock_date)
             crypto_symbols = list_universe_symbols(db, asset_class="crypto", trade_date=stock_date)
             created: list[str] = []
+
             if not stock_symbols:
                 worker.resolve_stock_universe(now=now, force=False)
                 created.append("stock")
+
             if not crypto_symbols:
                 worker.resolve_crypto_universe(now=now, force=False)
                 created.append("crypto")
+
             if created:
                 self._emit_event(
                     db,
@@ -151,9 +188,11 @@ class SchedulerWorker:
         local_now = now.astimezone(self._ny_tz)
         if local_now.weekday() >= 5:
             return
+
         trigger_time = self._parse_daily_trigger_time()
         if local_now.time().replace(tzinfo=None) < trigger_time:
             return
+
         trigger_date = local_now.date()
         if self._last_daily_stock_universe_date == trigger_date:
             return
@@ -186,13 +225,18 @@ class SchedulerWorker:
                 close_at = self._resolve_due_close(asset_class=asset_class, timeframe=timeframe, now=now)
                 if close_at is None:
                     continue
+
                 key = (asset_class, timeframe)
                 if self._last_processed_close.get(key) == close_at:
                     continue
-                summary = self._run_timeframe_pipeline(asset_class=asset_class, timeframe=timeframe, close_at=close_at, now=now)
+
+                summary = self._run_timeframe_pipeline(
+                    asset_class=asset_class,
+                    timeframe=timeframe,
+                    close_at=close_at,
+                    now=now,
+                )
                 self._last_processed_close[key] = close_at
-                if summary is None:
-                    continue
                 self._emit_pipeline_event(summary)
 
     def _run_timeframe_pipeline(
@@ -202,61 +246,185 @@ class SchedulerWorker:
         timeframe: str,
         close_at: datetime,
         now: datetime,
-    ) -> ScheduledPipelineSummary | None:
+    ) -> ScheduledPipelineSummary:
         with self.session_factory() as db:
             candle_worker = SingleCandleWorker(db, settings=self.settings)
             feature_worker = FeatureWorker(db, settings=self.settings)
             regime_worker = RegimeWorker(db, settings=self.settings)
             strategy_worker = StrategyWorker(db, settings=self.settings)
-            symbols = [row.symbol for row in list_universe_symbols(db, asset_class=asset_class, trade_date=trading_date_for_now(now))]
+
+            symbols = [
+                row.symbol
+                for row in list_universe_symbols(
+                    db,
+                    asset_class=asset_class,
+                    trade_date=trading_date_for_now(now),
+                )
+            ]
             if not symbols:
-                return None
+                reason = "universe_unavailable"
+                return ScheduledPipelineSummary(
+                    asset_class=asset_class,
+                    timeframe=timeframe,
+                    close_at=close_at,
+                    candle=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                    feature=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                    regime=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                    strategy=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                    skipped_reason=reason,
+                )
 
             if asset_class == "stock":
-                candle_summary = candle_worker.sync_stock_incremental(symbols=symbols, timeframe=timeframe, now=now)
+                candle_summary = candle_worker.sync_stock_incremental(
+                    symbols=symbols,
+                    timeframe=timeframe,
+                    now=now,
+                )
             else:
-                candle_summary = candle_worker.sync_crypto_incremental(symbols=symbols, timeframe=timeframe, now=now)
+                candle_summary = candle_worker.sync_crypto_incremental(
+                    symbols=symbols,
+                    timeframe=timeframe,
+                    now=now,
+                )
 
-            skipped_reason = candle_summary.skipped_reason
-            if skipped_reason in {"awaiting_next_close", "outside_nyse_hours"}:
-                return None
+            candle_stage = ScheduledStageSummary(
+                status="executed" if candle_summary.skipped_reason is None else "skipped",
+                skipped_reason=candle_summary.skipped_reason,
+                upserted_bars=int(candle_summary.upserted_bars or 0),
+            )
+
+            if candle_summary.skipped_reason is not None:
+                reason = candle_summary.skipped_reason
+                return ScheduledPipelineSummary(
+                    asset_class=asset_class,
+                    timeframe=timeframe,
+                    close_at=close_at,
+                    candle=candle_stage,
+                    feature=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                    regime=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                    strategy=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                    skipped_reason=reason,
+                )
+
+            if candle_stage.upserted_bars <= 0:
+                reason = "no_closed_bars_persisted"
+                return ScheduledPipelineSummary(
+                    asset_class=asset_class,
+                    timeframe=timeframe,
+                    close_at=close_at,
+                    candle=candle_stage,
+                    feature=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                    regime=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                    strategy=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                    skipped_reason=reason,
+                )
 
             if asset_class == "stock":
-                feature_worker.build_stock_features(timeframe=timeframe, now=now)
-                regime_worker.build_stock_regime(timeframe=timeframe, now=now)
+                feature_summary = feature_worker.build_stock_features(timeframe=timeframe, now=now)
+            else:
+                feature_summary = feature_worker.build_crypto_features(timeframe=timeframe, now=now)
+
+            feature_reason = getattr(feature_summary, "skipped_reason", None)
+            feature_stage = ScheduledStageSummary(
+                status="executed" if feature_reason is None else "skipped",
+                skipped_reason=feature_reason,
+                computed_snapshots=int(getattr(feature_summary, "computed_snapshots", 0) or 0),
+            )
+            if feature_reason is not None:
+                return ScheduledPipelineSummary(
+                    asset_class=asset_class,
+                    timeframe=timeframe,
+                    close_at=close_at,
+                    candle=candle_stage,
+                    feature=feature_stage,
+                    regime=ScheduledStageSummary(status="skipped", skipped_reason=feature_reason),
+                    strategy=ScheduledStageSummary(status="skipped", skipped_reason=feature_reason),
+                    skipped_reason=feature_reason,
+                )
+
+            if asset_class == "stock":
+                regime_summary = regime_worker.build_stock_regime(timeframe=timeframe, now=now)
+            else:
+                regime_summary = regime_worker.build_crypto_regime(timeframe=timeframe, now=now)
+
+            regime_reason = getattr(regime_summary, "skipped_reason", None)
+            regime_stage = ScheduledStageSummary(
+                status="executed" if regime_reason is None else "skipped",
+                skipped_reason=regime_reason,
+                computed_snapshots=int(getattr(regime_summary, "computed_snapshots", 0) or 0),
+                regime=getattr(regime_summary, "regime", None),
+                entry_policy=getattr(regime_summary, "entry_policy", None),
+                symbol_count=int(getattr(regime_summary, "symbol_count", 0) or 0),
+            )
+            if regime_reason is not None:
+                return ScheduledPipelineSummary(
+                    asset_class=asset_class,
+                    timeframe=timeframe,
+                    close_at=close_at,
+                    candle=candle_stage,
+                    feature=feature_stage,
+                    regime=regime_stage,
+                    strategy=ScheduledStageSummary(status="skipped", skipped_reason=regime_reason),
+                    skipped_reason=regime_reason,
+                )
+
+            if asset_class == "stock":
                 strategy_summary = strategy_worker.build_stock_candidates(timeframe=timeframe, now=now)
             else:
-                feature_worker.build_crypto_features(timeframe=timeframe, now=now)
-                regime_worker.build_crypto_regime(timeframe=timeframe, now=now)
                 strategy_summary = strategy_worker.build_crypto_candidates(timeframe=timeframe, now=now)
+
+            strategy_reason = getattr(strategy_summary, "skipped_reason", None)
+            strategy_stage = ScheduledStageSummary(
+                status="executed" if strategy_reason is None else "skipped",
+                skipped_reason=strategy_reason,
+                regime=getattr(strategy_summary, "regime", None),
+                entry_policy=getattr(strategy_summary, "entry_policy", None),
+                evaluated_rows=int(getattr(strategy_summary, "evaluated_rows", 0) or 0),
+                blocked_rows=int(getattr(strategy_summary, "blocked_rows", 0) or 0),
+                ready_rows=int(getattr(strategy_summary, "ready_rows", 0) or 0),
+            )
 
             return ScheduledPipelineSummary(
                 asset_class=asset_class,
                 timeframe=timeframe,
                 close_at=close_at,
-                upserted_bars=candle_summary.upserted_bars,
-                evaluated_rows=strategy_summary.evaluated_rows,
-                blocked_rows=strategy_summary.blocked_rows,
-                ready_rows=strategy_summary.ready_rows,
-                skipped_reason=skipped_reason,
+                candle=candle_stage,
+                feature=feature_stage,
+                regime=regime_stage,
+                strategy=strategy_stage,
+                skipped_reason=strategy_reason,
             )
 
     def _emit_pipeline_event(self, summary: ScheduledPipelineSummary) -> None:
+        event_type = "scheduler.pipeline_executed"
+        severity = "info"
+        message = f"Scheduled {summary.asset_class} {summary.timeframe} pipeline executed."
+
+        if summary.skipped_reason is not None:
+            event_type = "scheduler.pipeline_skipped"
+            severity = self._skip_severity(summary.skipped_reason)
+            message = f"Scheduled {summary.asset_class} {summary.timeframe} pipeline skipped."
+
         with self.session_factory() as db:
             self._emit_event(
                 db,
-                event_type="scheduler.pipeline_executed",
-                severity="info",
-                message=f"Scheduled {summary.asset_class} {summary.timeframe} pipeline executed.",
+                event_type=event_type,
+                severity=severity,
+                message=message,
                 payload={
                     "asset_class": summary.asset_class,
                     "timeframe": summary.timeframe,
                     "close_at": summary.close_at.isoformat(),
+                    "pipeline_status": summary.pipeline_status,
                     "upserted_bars": summary.upserted_bars,
                     "evaluated_rows": summary.evaluated_rows,
                     "blocked_rows": summary.blocked_rows,
                     "ready_rows": summary.ready_rows,
                     "skipped_reason": summary.skipped_reason,
+                    "candle": self._stage_payload(summary.candle),
+                    "feature": self._stage_payload(summary.feature),
+                    "regime": self._stage_payload(summary.regime),
+                    "strategy": self._stage_payload(summary.strategy),
                 },
                 commit=True,
             )
@@ -291,6 +459,27 @@ class SchedulerWorker:
             return clock_time(hour=8, minute=40)
 
     @staticmethod
+    def _stage_payload(stage: ScheduledStageSummary) -> dict[str, object]:
+        return {
+            "status": stage.status,
+            "skipped_reason": stage.skipped_reason,
+            "upserted_bars": stage.upserted_bars,
+            "computed_snapshots": stage.computed_snapshots,
+            "regime": stage.regime,
+            "entry_policy": stage.entry_policy,
+            "symbol_count": stage.symbol_count,
+            "evaluated_rows": stage.evaluated_rows,
+            "blocked_rows": stage.blocked_rows,
+            "ready_rows": stage.ready_rows,
+        }
+
+    @staticmethod
+    def _skip_severity(reason: str) -> str:
+        if reason in {"no_closed_bars_persisted", "universe_unavailable"}:
+            return "warning"
+        return "info"
+
+    @staticmethod
     def _emit_event(
         db: Session,
         *,
@@ -315,7 +504,10 @@ class SchedulerWorker:
         bind = db.get_bind()
         if bind is None or bind.dialect.name == "sqlite":
             return True
-        acquired = db.execute(text("SELECT pg_try_advisory_lock(:key)"), {"key": SCHEDULER_ADVISORY_LOCK_KEY}).scalar()
+        acquired = db.execute(
+            text("SELECT pg_try_advisory_lock(:key)"),
+            {"key": SCHEDULER_ADVISORY_LOCK_KEY},
+        ).scalar()
         return bool(acquired)
 
     @staticmethod
@@ -323,5 +515,8 @@ class SchedulerWorker:
         bind = db.get_bind()
         if bind is None or bind.dialect.name == "sqlite":
             return
-        db.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": SCHEDULER_ADVISORY_LOCK_KEY})
+        db.execute(
+            text("SELECT pg_advisory_unlock(:key)"),
+            {"key": SCHEDULER_ADVISORY_LOCK_KEY},
+        )
         db.commit()

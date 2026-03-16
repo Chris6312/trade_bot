@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -23,6 +23,7 @@ UNIVERSE_STATS_LOOKBACK_DAYS = {
     "stock": 7,
     "crypto": 4,
 }
+NY_TZ = ZoneInfo("America/New_York")
 
 
 @router.get("/{asset_class}/current", response_model=list[UniverseConstituentRead])
@@ -93,11 +94,13 @@ def _latest_candle_stats_by_symbol(db: Session, *, asset_class: str, symbols: li
     timeframe_priority = UNIVERSE_PRICE_TIMEFRAME_PRIORITY.get(asset_class, ("1h", "1d"))
     lookback_days = UNIVERSE_STATS_LOOKBACK_DAYS.get(asset_class, 3)
     cutoff = datetime.now(UTC) - timedelta(days=lookback_days)
+    market_data_venue = "kraken" if asset_class == "crypto" else "alpaca"
 
     rows = (
         db.query(Candle.symbol, Candle.timeframe, Candle.timestamp, Candle.close)
         .filter(
             Candle.asset_class == asset_class,
+            Candle.venue == market_data_venue,
             Candle.symbol.in_(symbols),
             Candle.timeframe.in_(timeframe_priority),
             Candle.timestamp >= cutoff,
@@ -118,12 +121,16 @@ def _latest_candle_stats_by_symbol(db: Session, *, asset_class: str, symbols: li
             continue
 
         latest_close = float(latest.close)
-        change_pct = _resolve_change_pct(asset_class=asset_class, by_timeframe=by_timeframe, latest=latest)
+        change_pct, change_window = _resolve_change_pct(
+            asset_class=asset_class,
+            by_timeframe=by_timeframe,
+            latest=latest,
+        )
         stats[symbol] = {
             "last_price": latest_close,
             "change_pct": change_pct,
             "last_candle_at": latest.timestamp,
-            "change_window": "24h" if change_pct is not None else None,
+            "change_window": change_window,
             "price_timeframe": latest.timeframe,
         }
 
@@ -219,55 +226,74 @@ def _select_preferred_price_entry(by_timeframe: dict[str, list[object]], timefra
     return None
 
 
-def _resolve_change_pct(*, asset_class: str, by_timeframe: dict[str, list[object]], latest: object) -> float | None:
+def _resolve_change_pct(*, asset_class: str, by_timeframe: dict[str, list[object]], latest: object) -> tuple[float | None, str | None]:
     latest_close = getattr(latest, "close", None)
     if latest_close in {None, 0}:
-        return None
-
-    latest_value = float(latest_close)
-    baseline = _find_24h_baseline(asset_class=asset_class, by_timeframe=by_timeframe, latest=latest)
-    if baseline is None or baseline.close in {None, 0}:
-        return None
-
-    baseline_value = float(baseline.close)
-    if baseline_value == 0:
-        return None
-    change_pct = ((latest_value - baseline_value) / baseline_value) * 100
-    if abs(change_pct) > 40:
-        return None
-    return change_pct
-
-
-def _find_24h_baseline(*, asset_class: str, by_timeframe: dict[str, list[object]], latest: object) -> object | None:
-    same_timeframe_rows = list(by_timeframe.get(latest.timeframe, []))
-    same_timeframe_candidate = _find_closest_entry(
-        same_timeframe_rows,
-        latest.timestamp,
-        target_age=timedelta(hours=24),
-        max_deviation=_max_24h_deviation(latest.timeframe),
-    )
-    if same_timeframe_candidate is not None:
-        return same_timeframe_candidate
-
-    daily_rows = list(by_timeframe.get("1d", []))
-    if daily_rows:
-        if asset_class == "stock":
-            return _find_previous_entry(daily_rows, latest.timestamp, max_age=timedelta(days=5))
-        return _find_closest_entry(
-            daily_rows,
-            latest.timestamp,
-            target_age=timedelta(hours=24),
-            max_deviation=timedelta(hours=18),
-        )
+        return None, None
 
     if asset_class == "stock":
-        return _find_closest_entry(
-            same_timeframe_rows,
-            latest.timestamp,
-            target_age=timedelta(hours=24),
-            max_deviation=timedelta(hours=48),
-        )
+        baseline = _find_stock_previous_close(by_timeframe=by_timeframe, latest=latest)
+        change_window = "prev_close"
+    else:
+        if latest.timeframe != "15m":
+            return None, None
+        baseline = _find_crypto_15m_24h_baseline(by_timeframe=by_timeframe, latest=latest)
+        change_window = "24h_15m"
+
+    if baseline is None or baseline.close in {None, 0}:
+        return None, None
+
+    latest_value = float(latest_close)
+    baseline_value = float(baseline.close)
+    if baseline_value == 0:
+        return None, None
+
+    change_pct = ((latest_value - baseline_value) / baseline_value) * 100
+    if asset_class == "crypto" and abs(change_pct) > 40:
+        return None, None
+
+    return change_pct, change_window
+
+
+def _find_stock_previous_close(*, by_timeframe: dict[str, list[object]], latest: object) -> object | None:
+    daily_rows = list(by_timeframe.get("1d", []))
+    if not daily_rows:
+        return None
+
+    latest_session_date = latest.timestamp.astimezone(NY_TZ).date()
+    for entry in daily_rows:
+        if entry.close in {None, 0}:
+            continue
+        entry_session_date = entry.timestamp.astimezone(NY_TZ).date()
+        if latest.timeframe == "1d" and entry.timestamp == latest.timestamp:
+            continue
+        if entry_session_date < latest_session_date:
+            return entry
     return None
+
+
+def _find_crypto_15m_24h_baseline(*, by_timeframe: dict[str, list[object]], latest: object) -> object | None:
+    rows_15m = [row for row in by_timeframe.get("15m", []) if row.close not in {None, 0}]
+    if len(rows_15m) < 2:
+        return None
+
+    target = latest.timestamp - timedelta(hours=24)
+
+    for entry in rows_15m[1:]:
+        if entry.timestamp == target:
+            return entry
+
+    candidates: list[tuple[timedelta, object]] = []
+    for entry in rows_15m[1:]:
+        deviation = abs(entry.timestamp - target)
+        if deviation <= timedelta(minutes=15):
+            candidates.append((deviation, entry))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[0])
+    return candidates[0][1]
 
 
 def _find_closest_entry(
