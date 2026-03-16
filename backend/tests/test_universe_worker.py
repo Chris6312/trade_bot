@@ -118,6 +118,52 @@ def test_ai_first_stock_universe_resolution_persists_snapshot_and_order(
     assert ai_service.calls == 1
 
 
+def test_ai_run_marks_ranked_and_fill_rows_separately(db_session: Session, worker_settings: Settings) -> None:
+    screener = FakeScreenerAdapter(
+        rows=[
+            {"symbol": "AAPL", "volume": 1000},
+            {"symbol": "MSFT", "volume": 900},
+            {"symbol": "SPY", "volume": 800, "is_etf": True},
+        ],
+        assets={
+            "AAPL": {"symbol": "AAPL", "tradable": True, "status": "active", "class": "us_equity"},
+            "MSFT": {"symbol": "MSFT", "tradable": True, "status": "active", "class": "us_equity"},
+            "SPY": {"symbol": "SPY", "tradable": True, "status": "active", "class": "us_equity", "is_etf": True},
+        },
+    )
+    ai_service = FakeAIService(
+        rankings=[
+            {"symbol": "MSFT", "ai_rank_score": 0.99, "confidence": 0.8, "brief_reason": "strong liquidity"},
+            {"symbol": "AAPL", "ai_rank_score": 0.88, "confidence": 0.7, "brief_reason": "quality trend"},
+        ]
+    )
+    worker = UniverseWorker(
+        db_session,
+        registry=FakeRegistry(screener),
+        settings=worker_settings,
+        ai_service=ai_service,
+    )
+
+    summary = worker.resolve_stock_universe(now=datetime(2026, 3, 14, 12, 55, tzinfo=UTC), force=True)
+
+    assert summary.source == "ai"
+    run = db_session.query(UniverseRun).filter(UniverseRun.asset_class == "stock").one()
+    constituents = {item.symbol: item for item in run.constituents}
+
+    assert constituents["MSFT"].source == "ai"
+    assert constituents["MSFT"].payload["ai_scored"] is True
+    assert constituents["MSFT"].payload["selection_source"] == "ai_ranked"
+    assert constituents["MSFT"].payload["ai_rank_score"] == 0.99
+    assert constituents["MSFT"].payload["confidence"] == 0.8
+
+    assert constituents["SPY"].source == "ai"
+    assert constituents["SPY"].payload["ai_scored"] is False
+    assert constituents["SPY"].payload["selection_source"] == "ai_fill"
+    assert "ai_rank_score" not in constituents["SPY"].payload
+    assert "confidence" not in constituents["SPY"].payload
+    assert constituents["SPY"].selection_reason == "Selected from fallback liquidity screen after AI returned a partial ranking."
+
+
 def test_fallback_universe_used_when_ai_fails(db_session: Session, worker_settings: Settings) -> None:
     screener = FakeScreenerAdapter(
         rows=[

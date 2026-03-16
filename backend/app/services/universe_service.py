@@ -231,11 +231,20 @@ def normalize_stock_candidates(
         if not symbol or symbol in seen:
             continue
 
-        asset = metadata.get(symbol, {})
+        asset = asset_metadata.get(symbol, {}) if asset_metadata else {}
         if not _is_tradable_us_equity(symbol=symbol, candidate=candidate, asset=asset):
             continue
         if _is_excluded_etf(symbol=symbol, candidate=candidate, asset=asset):
             continue
+
+        ai_scored = _candidate_has_ai_ranking(candidate) if source == "ai" else False
+        selection_source = _resolve_stock_selection_source(source=source, ai_scored=ai_scored)
+        payload = {
+            **asset,
+            **candidate,
+            "ai_scored": ai_scored,
+            "selection_source": selection_source,
+        }
 
         seen.add(symbol)
         normalized.append(
@@ -245,8 +254,12 @@ def normalize_stock_candidates(
                 source=source,
                 venue=venue,
                 asset_class="stock",
-                selection_reason=str(candidate.get("brief_reason") or candidate.get("reason") or "")[:200] or None,
-                payload={**asset, **candidate},
+                selection_reason=_resolve_stock_selection_reason(
+                    candidate=candidate,
+                    source=source,
+                    ai_scored=ai_scored,
+                ),
+                payload=payload,
             )
         )
         if len(normalized) >= max_size:
@@ -320,3 +333,25 @@ def _is_excluded_etf(*, symbol: str, candidate: dict[str, Any], asset: dict[str,
                 return True
 
     return False
+
+
+def _candidate_has_ai_ranking(candidate: dict[str, Any]) -> bool:
+    for key in ("ai_rank_score", "confidence"):
+        if key in candidate and candidate.get(key) is not None:
+            return True
+    return False
+
+
+def _resolve_stock_selection_source(*, source: str, ai_scored: bool) -> str:
+    if source == "ai":
+        return "ai_ranked" if ai_scored else "ai_fill"
+    return source
+
+
+def _resolve_stock_selection_reason(*, candidate: dict[str, Any], source: str, ai_scored: bool) -> str | None:
+    reason = str(candidate.get("brief_reason") or candidate.get("reason") or "")[:200].strip()
+    if reason:
+        return reason
+    if source == "ai" and not ai_scored:
+        return "Selected from fallback liquidity screen after AI returned a partial ranking."
+    return None

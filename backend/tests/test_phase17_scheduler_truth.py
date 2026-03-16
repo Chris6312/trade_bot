@@ -8,6 +8,7 @@ from backend.app.db.session import get_session_factory
 from backend.app.models.core import SystemEvent
 from backend.app.services.candle_service import CandleSyncSummary
 from backend.app.workers.scheduler_worker import SchedulerWorker
+from backend.app.workers.universe_worker import UniverseResolutionSummary
 
 
 class _FakeCandleWorker:
@@ -240,3 +241,133 @@ def test_scheduler_emits_nested_stage_payload_for_executed_pipeline(client, monk
         assert strategy["ready_rows"] == 2
         assert strategy["regime"] == "neutral"
         assert strategy["entry_policy"] == "reduced"
+
+
+def test_scheduler_daily_stock_universe_refresh_backfills_and_runs_strategy(client, monkeypatch) -> None:
+    now = datetime(2026, 3, 16, 16, 40, 59, tzinfo=UTC)
+    seen_backfill_timeframes: list[str] = []
+    seen_strategy_timeframes: list[str] = []
+
+    class _UniverseWorker:
+        def __init__(self, db, *, settings):
+            self.db = db
+            self.settings = settings
+
+        def resolve_stock_universe(self, *, now, force):
+            assert force is True
+            return UniverseResolutionSummary(
+                asset_class="stock",
+                trade_date="2026-03-16",
+                source="ai",
+                symbols=("AAPL", "MSFT"),
+                snapshot_path=None,
+            )
+
+    class _BackfillCandleWorker:
+        def __init__(self, db, *, settings):
+            self.db = db
+            self.settings = settings
+
+        def sync_stock_backfill(self, *, symbols, timeframe, now):
+            seen_backfill_timeframes.append(timeframe)
+            assert tuple(symbols) == ("AAPL", "MSFT")
+            return CandleSyncSummary(
+                asset_class="stock",
+                timeframe=timeframe,
+                requested_symbols=tuple(symbols),
+                upserted_bars=45,
+                skipped_reason=None,
+            )
+
+        def _is_stock_incremental_window_open(self, *, timeframe, at):
+            return True
+
+        def _latest_released_close(self, *, asset_class, timeframe, at):
+            return datetime(2026, 3, 16, 16, 30, tzinfo=UTC)
+
+    class _FeatureWorker:
+        def __init__(self, db, *, settings):
+            self.db = db
+            self.settings = settings
+
+        def build_stock_features(self, *, timeframe, now):
+            return SimpleNamespace(computed_snapshots=120, skipped_reason=None)
+
+    class _RegimeWorker:
+        def __init__(self, db, *, settings):
+            self.db = db
+            self.settings = settings
+
+        def build_stock_regime(self, *, timeframe, now):
+            return SimpleNamespace(
+                computed_snapshots=1,
+                regime="neutral",
+                entry_policy="reduced",
+                symbol_count=2,
+                skipped_reason=None,
+            )
+
+    class _StrategyWorker:
+        def __init__(self, db, *, settings):
+            self.db = db
+            self.settings = settings
+
+        def build_stock_candidates(self, *, timeframe, now):
+            seen_strategy_timeframes.append(timeframe)
+            return SimpleNamespace(
+                regime="neutral",
+                entry_policy="reduced",
+                evaluated_rows=8,
+                blocked_rows=3,
+                ready_rows=5,
+                skipped_reason=None,
+            )
+
+    monkeypatch.setattr(
+        "backend.app.workers.scheduler_worker.list_universe_symbols",
+        lambda db, *, asset_class, trade_date: [SimpleNamespace(symbol="AAPL"), SimpleNamespace(symbol="MSFT")]
+        if asset_class == "stock"
+        else [],
+    )
+    monkeypatch.setattr("backend.app.workers.scheduler_worker.UniverseWorker", _UniverseWorker)
+    monkeypatch.setattr("backend.app.workers.scheduler_worker.SingleCandleWorker", _BackfillCandleWorker)
+    monkeypatch.setattr("backend.app.workers.scheduler_worker.FeatureWorker", _FeatureWorker)
+    monkeypatch.setattr("backend.app.workers.scheduler_worker.RegimeWorker", _RegimeWorker)
+    monkeypatch.setattr("backend.app.workers.scheduler_worker.StrategyWorker", _StrategyWorker)
+
+    settings = Settings(
+        database_url="sqlite:///unused.db",
+        stock_feature_timeframes="1h,15m,5m,1d",
+        crypto_feature_timeframes="",
+        ai_premarket_time_et="08:40",
+    )
+    worker = SchedulerWorker(session_factory=get_session_factory(), settings=settings)
+
+    worker._run_daily_stock_universe_if_due(now)
+
+    assert seen_backfill_timeframes == ["1h", "15m", "5m", "1d"]
+    assert seen_strategy_timeframes == ["1h", "15m", "5m", "1d"]
+
+    with get_session_factory()() as db:
+        refresh_event = (
+            db.query(SystemEvent)
+            .filter(SystemEvent.event_type == "scheduler.stock_universe_daily_refresh")
+            .order_by(SystemEvent.id.desc())
+            .first()
+        )
+        assert refresh_event is not None
+        assert refresh_event.payload["source"] == "ai"
+        assert refresh_event.payload["symbol_count"] == 2
+
+        pipeline_event = (
+            db.query(SystemEvent)
+            .filter(SystemEvent.event_type == "scheduler.stock_universe_backfill_and_strategy_refresh")
+            .order_by(SystemEvent.id.desc())
+            .first()
+        )
+        assert pipeline_event is not None
+        assert pipeline_event.payload["pipeline_status"] == "executed"
+        assert [item["timeframe"] for item in pipeline_event.payload["timeframes"]] == ["1h", "15m", "5m", "1d"]
+        assert all(item["candle"]["upserted_bars"] == 45 for item in pipeline_event.payload["timeframes"])
+        assert all(item["strategy"]["evaluated_rows"] == 8 for item in pipeline_event.payload["timeframes"])
+        assert all(item["strategy"]["ready_rows"] == 5 for item in pipeline_event.payload["timeframes"])

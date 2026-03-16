@@ -200,7 +200,6 @@ class SchedulerWorker:
         with self.session_factory() as db:
             universe_worker = UniverseWorker(db, settings=self.settings)
             stock_summary = universe_worker.resolve_stock_universe(now=now, force=True)
-            self._last_daily_stock_universe_date = trigger_date
             payload = {
                 "asset_class": "stock",
                 "trade_date": stock_summary.trade_date,
@@ -215,6 +214,14 @@ class SchedulerWorker:
                 payload=payload,
                 commit=True,
             )
+
+        pipeline_summaries = self._run_stock_post_universe_refresh_pipeline(now=now)
+        self._emit_stock_post_universe_refresh_event(
+            trade_date=stock_summary.trade_date,
+            source=stock_summary.source,
+            summaries=pipeline_summaries,
+        )
+        self._last_daily_stock_universe_date = trigger_date
 
     def _run_incremental_pipelines_if_due(self, now: datetime) -> None:
         for asset_class, timeframes in (
@@ -238,6 +245,160 @@ class SchedulerWorker:
                 )
                 self._last_processed_close[key] = close_at
                 self._emit_pipeline_event(summary)
+
+    def _run_stock_post_universe_refresh_pipeline(self, *, now: datetime) -> list[ScheduledPipelineSummary]:
+        with self.session_factory() as db:
+            candle_worker = SingleCandleWorker(db, settings=self.settings)
+            feature_worker = FeatureWorker(db, settings=self.settings)
+            regime_worker = RegimeWorker(db, settings=self.settings)
+            strategy_worker = StrategyWorker(db, settings=self.settings)
+            trade_date = trading_date_for_now(now)
+            symbols = [
+                row.symbol
+                for row in list_universe_symbols(
+                    db,
+                    asset_class="stock",
+                    trade_date=trade_date,
+                )
+            ]
+
+            summaries: list[ScheduledPipelineSummary] = []
+            for timeframe in self.settings.stock_feature_timeframe_list:
+                close_at = self._resolve_due_close(asset_class="stock", timeframe=timeframe, now=now) or now
+                if not symbols:
+                    reason = "universe_unavailable"
+                    summaries.append(
+                        ScheduledPipelineSummary(
+                            asset_class="stock",
+                            timeframe=timeframe,
+                            close_at=close_at,
+                            candle=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                            feature=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                            regime=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                            strategy=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                            skipped_reason=reason,
+                        )
+                    )
+                    continue
+
+                candle_summary = candle_worker.sync_stock_backfill(
+                    symbols=symbols,
+                    timeframe=timeframe,
+                    now=now,
+                )
+                candle_stage = ScheduledStageSummary(
+                    status="executed" if candle_summary.skipped_reason is None else "skipped",
+                    skipped_reason=candle_summary.skipped_reason,
+                    upserted_bars=int(candle_summary.upserted_bars or 0),
+                )
+                if candle_summary.skipped_reason is not None:
+                    reason = candle_summary.skipped_reason
+                    summaries.append(
+                        ScheduledPipelineSummary(
+                            asset_class="stock",
+                            timeframe=timeframe,
+                            close_at=close_at,
+                            candle=candle_stage,
+                            feature=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                            regime=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                            strategy=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                            skipped_reason=reason,
+                        )
+                    )
+                    continue
+
+                if candle_stage.upserted_bars <= 0:
+                    reason = "no_closed_bars_persisted"
+                    summaries.append(
+                        ScheduledPipelineSummary(
+                            asset_class="stock",
+                            timeframe=timeframe,
+                            close_at=close_at,
+                            candle=candle_stage,
+                            feature=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                            regime=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                            strategy=ScheduledStageSummary(status="skipped", skipped_reason=reason),
+                            skipped_reason=reason,
+                        )
+                    )
+                    continue
+
+                feature_summary = feature_worker.build_stock_features(timeframe=timeframe, now=now)
+                feature_reason = getattr(feature_summary, "skipped_reason", None)
+                feature_stage = ScheduledStageSummary(
+                    status="executed" if feature_reason is None else "skipped",
+                    skipped_reason=feature_reason,
+                    computed_snapshots=int(getattr(feature_summary, "computed_snapshots", 0) or 0),
+                )
+                if feature_reason is not None:
+                    summaries.append(
+                        ScheduledPipelineSummary(
+                            asset_class="stock",
+                            timeframe=timeframe,
+                            close_at=close_at,
+                            candle=candle_stage,
+                            feature=feature_stage,
+                            regime=ScheduledStageSummary(status="skipped", skipped_reason=feature_reason),
+                            strategy=ScheduledStageSummary(status="skipped", skipped_reason=feature_reason),
+                            skipped_reason=feature_reason,
+                        )
+                    )
+                    continue
+
+                regime_summary = regime_worker.build_stock_regime(timeframe=timeframe, now=now)
+                regime_reason = getattr(regime_summary, "skipped_reason", None)
+                regime_stage = ScheduledStageSummary(
+                    status="executed" if regime_reason is None else "skipped",
+                    skipped_reason=regime_reason,
+                    computed_snapshots=int(getattr(regime_summary, "computed_snapshots", 0) or 0),
+                    regime=getattr(regime_summary, "regime", None),
+                    entry_policy=getattr(regime_summary, "entry_policy", None),
+                    symbol_count=int(getattr(regime_summary, "symbol_count", 0) or 0),
+                )
+                if regime_reason is not None:
+                    summaries.append(
+                        ScheduledPipelineSummary(
+                            asset_class="stock",
+                            timeframe=timeframe,
+                            close_at=close_at,
+                            candle=candle_stage,
+                            feature=feature_stage,
+                            regime=regime_stage,
+                            strategy=ScheduledStageSummary(status="skipped", skipped_reason=regime_reason),
+                            skipped_reason=regime_reason,
+                        )
+                    )
+                    continue
+
+                strategy_summary = strategy_worker.build_stock_candidates(timeframe=timeframe, now=now)
+                strategy_reason = getattr(strategy_summary, "skipped_reason", None)
+                strategy_stage = ScheduledStageSummary(
+                    status="executed" if strategy_reason is None else "skipped",
+                    skipped_reason=strategy_reason,
+                    regime=getattr(strategy_summary, "regime", None),
+                    entry_policy=getattr(strategy_summary, "entry_policy", None),
+                    evaluated_rows=int(getattr(strategy_summary, "evaluated_rows", 0) or 0),
+                    blocked_rows=int(getattr(strategy_summary, "blocked_rows", 0) or 0),
+                    ready_rows=int(getattr(strategy_summary, "ready_rows", 0) or 0),
+                )
+                summaries.append(
+                    ScheduledPipelineSummary(
+                        asset_class="stock",
+                        timeframe=timeframe,
+                        close_at=close_at,
+                        candle=candle_stage,
+                        feature=feature_stage,
+                        regime=regime_stage,
+                        strategy=strategy_stage,
+                        skipped_reason=strategy_reason,
+                    )
+                )
+
+                due_close = self._resolve_due_close(asset_class="stock", timeframe=timeframe, now=now)
+                if due_close is not None:
+                    self._last_processed_close[("stock", timeframe)] = due_close
+
+            return summaries
 
     def _run_timeframe_pipeline(
         self,
@@ -425,6 +586,53 @@ class SchedulerWorker:
                     "feature": self._stage_payload(summary.feature),
                     "regime": self._stage_payload(summary.regime),
                     "strategy": self._stage_payload(summary.strategy),
+                },
+                commit=True,
+            )
+
+    def _emit_stock_post_universe_refresh_event(
+        self,
+        *,
+        trade_date: str,
+        source: str,
+        summaries: list[ScheduledPipelineSummary],
+    ) -> None:
+        overall_status = "executed"
+        severity = "info"
+        if summaries and all(summary.skipped_reason is not None for summary in summaries):
+            overall_status = "skipped"
+            severity = "warning"
+        elif any(summary.skipped_reason is not None for summary in summaries):
+            overall_status = "partial"
+
+        with self.session_factory() as db:
+            self._emit_event(
+                db,
+                event_type="scheduler.stock_universe_backfill_and_strategy_refresh",
+                severity=severity,
+                message="Stock universe post-refresh candle backfill and strategy pipeline executed.",
+                payload={
+                    "asset_class": "stock",
+                    "trade_date": trade_date,
+                    "source": source,
+                    "pipeline_status": overall_status,
+                    "timeframes": [
+                        {
+                            "timeframe": summary.timeframe,
+                            "close_at": summary.close_at.isoformat(),
+                            "pipeline_status": summary.pipeline_status,
+                            "upserted_bars": summary.upserted_bars,
+                            "evaluated_rows": summary.evaluated_rows,
+                            "blocked_rows": summary.blocked_rows,
+                            "ready_rows": summary.ready_rows,
+                            "skipped_reason": summary.skipped_reason,
+                            "candle": self._stage_payload(summary.candle),
+                            "feature": self._stage_payload(summary.feature),
+                            "regime": self._stage_payload(summary.regime),
+                            "strategy": self._stage_payload(summary.strategy),
+                        }
+                        for summary in summaries
+                    ],
                 },
                 commit=True,
             )

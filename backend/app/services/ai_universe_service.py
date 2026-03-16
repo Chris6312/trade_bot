@@ -9,6 +9,10 @@ import httpx
 from backend.app.core.config import Settings, get_settings
 
 
+AI_UNIVERSE_RESPONSE_TIMEOUT_SECONDS = 180.0
+AI_UNIVERSE_CONNECT_TIMEOUT_SECONDS = 15.0
+
+
 @dataclass
 class AIUniverseService:
     settings: Settings | None = None
@@ -94,7 +98,12 @@ class AIUniverseService:
         }
         url = settings.ai_api_url.rstrip("/") + "/responses"
 
-        with httpx.Client(timeout=httpx.Timeout(60.0, connect=15.0)) as client:
+        with httpx.Client(
+            timeout=httpx.Timeout(
+                AI_UNIVERSE_RESPONSE_TIMEOUT_SECONDS,
+                connect=AI_UNIVERSE_CONNECT_TIMEOUT_SECONDS,
+            )
+        ) as client:
             response = client.post(url, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
