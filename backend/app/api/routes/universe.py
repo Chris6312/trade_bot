@@ -173,7 +173,7 @@ def _current_strategy_summary_by_symbol(db: Session, *, asset_class: str, symbol
             continue
 
         best_row = max(symbol_rows, key=_strategy_priority_key)
-        all_reasons = _dedupe_block_reasons(symbol_rows)
+        best_row_reasons = [str(reason) for reason in (best_row.blocked_reasons or []) if str(reason)]
         any_ready = any((row.status or "").lower() == "ready" for row in symbol_rows)
         all_blocked = all((row.status or "").lower() == "blocked" for row in symbol_rows)
         if any_ready:
@@ -181,10 +181,10 @@ def _current_strategy_summary_by_symbol(db: Session, *, asset_class: str, symbol
             block_reason = None
         elif all_blocked:
             eligibility = "Blocked"
-            block_reason = ", ".join(all_reasons) if all_reasons else "all_strategies_blocked"
+            block_reason = ", ".join(best_row_reasons) if best_row_reasons else (best_row.decision_reason or "all_strategies_blocked")
         else:
             eligibility = "Not ready"
-            block_reason = ", ".join(all_reasons) if all_reasons else None
+            block_reason = ", ".join(best_row_reasons) if best_row_reasons else best_row.decision_reason
 
         summaries[symbol] = {
             "eligibility": eligibility,
@@ -349,17 +349,6 @@ def _strategy_priority_key(row: StrategySnapshot) -> tuple[int, float, float, da
         row.id,
     )
 
-
-def _dedupe_block_reasons(rows: list[StrategySnapshot]) -> list[str]:
-    reasons: list[str] = []
-    seen: set[str] = set()
-    for row in rows:
-        for reason in row.blocked_reasons or []:
-            normalized = str(reason)
-            if normalized and normalized not in seen:
-                reasons.append(normalized)
-                seen.add(normalized)
-    return reasons
 
 
 def _decimal_to_float(value: Decimal | float | int | None) -> float | None:

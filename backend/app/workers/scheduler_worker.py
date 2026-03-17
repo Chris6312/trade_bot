@@ -371,17 +371,24 @@ class SchedulerWorker:
                     )
                     continue
 
-                strategy_summary = strategy_worker.build_stock_candidates(timeframe=timeframe, now=now)
-                strategy_reason = getattr(strategy_summary, "skipped_reason", None)
-                strategy_stage = ScheduledStageSummary(
-                    status="executed" if strategy_reason is None else "skipped",
-                    skipped_reason=strategy_reason,
-                    regime=getattr(strategy_summary, "regime", None),
-                    entry_policy=getattr(strategy_summary, "entry_policy", None),
-                    evaluated_rows=int(getattr(strategy_summary, "evaluated_rows", 0) or 0),
-                    blocked_rows=int(getattr(strategy_summary, "blocked_rows", 0) or 0),
-                    ready_rows=int(getattr(strategy_summary, "ready_rows", 0) or 0),
-                )
+                if timeframe in self.settings.stock_strategy_timeframe_list:
+                    strategy_summary = strategy_worker.build_stock_candidates(timeframe=timeframe, now=now)
+                    strategy_reason = getattr(strategy_summary, "skipped_reason", None)
+                    strategy_stage = ScheduledStageSummary(
+                        status="executed" if strategy_reason is None else "skipped",
+                        skipped_reason=strategy_reason,
+                        regime=getattr(strategy_summary, "regime", None),
+                        entry_policy=getattr(strategy_summary, "entry_policy", None),
+                        evaluated_rows=int(getattr(strategy_summary, "evaluated_rows", 0) or 0),
+                        blocked_rows=int(getattr(strategy_summary, "blocked_rows", 0) or 0),
+                        ready_rows=int(getattr(strategy_summary, "ready_rows", 0) or 0),
+                    )
+                else:
+                    strategy_reason = "filter_only_timeframe"
+                    strategy_stage = ScheduledStageSummary(
+                        status="skipped",
+                        skipped_reason=strategy_reason,
+                    )
                 summaries.append(
                     ScheduledPipelineSummary(
                         asset_class="stock",
@@ -391,7 +398,7 @@ class SchedulerWorker:
                         feature=feature_stage,
                         regime=regime_stage,
                         strategy=strategy_stage,
-                        skipped_reason=strategy_reason,
+                        skipped_reason=self._pipeline_skipped_reason(strategy_reason),
                     )
                 )
 
@@ -534,20 +541,30 @@ class SchedulerWorker:
                 self._run_ci_crypto_regime_advisory(db=db, timeframe=timeframe, now=now)
 
             if asset_class == "stock":
-                strategy_summary = strategy_worker.build_stock_candidates(timeframe=timeframe, now=now)
+                strategy_timeframes = self.settings.stock_strategy_timeframe_list
+                build_strategy = strategy_worker.build_stock_candidates
             else:
-                strategy_summary = strategy_worker.build_crypto_candidates(timeframe=timeframe, now=now)
+                strategy_timeframes = self.settings.crypto_strategy_timeframe_list
+                build_strategy = strategy_worker.build_crypto_candidates
 
-            strategy_reason = getattr(strategy_summary, "skipped_reason", None)
-            strategy_stage = ScheduledStageSummary(
-                status="executed" if strategy_reason is None else "skipped",
-                skipped_reason=strategy_reason,
-                regime=getattr(strategy_summary, "regime", None),
-                entry_policy=getattr(strategy_summary, "entry_policy", None),
-                evaluated_rows=int(getattr(strategy_summary, "evaluated_rows", 0) or 0),
-                blocked_rows=int(getattr(strategy_summary, "blocked_rows", 0) or 0),
-                ready_rows=int(getattr(strategy_summary, "ready_rows", 0) or 0),
-            )
+            if timeframe in strategy_timeframes:
+                strategy_summary = build_strategy(timeframe=timeframe, now=now)
+                strategy_reason = getattr(strategy_summary, "skipped_reason", None)
+                strategy_stage = ScheduledStageSummary(
+                    status="executed" if strategy_reason is None else "skipped",
+                    skipped_reason=strategy_reason,
+                    regime=getattr(strategy_summary, "regime", None),
+                    entry_policy=getattr(strategy_summary, "entry_policy", None),
+                    evaluated_rows=int(getattr(strategy_summary, "evaluated_rows", 0) or 0),
+                    blocked_rows=int(getattr(strategy_summary, "blocked_rows", 0) or 0),
+                    ready_rows=int(getattr(strategy_summary, "ready_rows", 0) or 0),
+                )
+            else:
+                strategy_reason = "filter_only_timeframe"
+                strategy_stage = ScheduledStageSummary(
+                    status="skipped",
+                    skipped_reason=strategy_reason,
+                )
 
             return ScheduledPipelineSummary(
                 asset_class=asset_class,
@@ -557,7 +574,7 @@ class SchedulerWorker:
                 feature=feature_stage,
                 regime=regime_stage,
                 strategy=strategy_stage,
-                skipped_reason=strategy_reason,
+                skipped_reason=self._pipeline_skipped_reason(strategy_reason),
             )
 
     def _emit_pipeline_event(self, summary: ScheduledPipelineSummary) -> None:
@@ -684,6 +701,12 @@ class SchedulerWorker:
             return clock_time(hour=int(hours), minute=int(minutes))
         except Exception:
             return clock_time(hour=8, minute=40)
+
+    @staticmethod
+    def _pipeline_skipped_reason(reason: str | None) -> str | None:
+        if reason == "filter_only_timeframe":
+            return None
+        return reason
 
     @staticmethod
     def _stage_payload(stage: ScheduledStageSummary) -> dict[str, object]:

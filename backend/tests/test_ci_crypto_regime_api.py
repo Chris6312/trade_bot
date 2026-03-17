@@ -83,7 +83,7 @@ def test_ci_crypto_regime_current_endpoint_uses_latest_state_and_settings(client
                 core_regime_state="bull",
                 degraded=False,
                 reason_codes_json=["btc_trend_mixed", "orderbook_bid_support_weak"],
-                summary_json={"notes": "advisory only", "orderbook_status": "ready", "orderbook_ready": True},
+                summary_json={"notes": "advisory only", "orderbook_status": "ready", "orderbook_ready": True, "hurst_status": "ready", "hurst_ready": True, "degraded_reasons": []},
             )
         )
         db.commit()
@@ -103,8 +103,12 @@ def test_ci_crypto_regime_current_endpoint_uses_latest_state_and_settings(client
     assert payload["core_regime_timeframe"] == "4h"
     assert payload["last_run_status"] == "success"
     assert payload["last_run_used_orderbook"] is True
+    assert payload["last_run_used_hurst"] is True
     assert payload["orderbook_status"] == "ready"
     assert payload["orderbook_ready"] is True
+    assert payload["hurst_status"] == "ready"
+    assert payload["hurst_ready"] is True
+    assert payload["degraded_reasons"] == []
 
 
 def test_ci_crypto_regime_history_models_and_run_detail_endpoints(client) -> None:
@@ -198,7 +202,7 @@ def test_ci_crypto_regime_history_models_and_run_detail_endpoints(client) -> Non
                     core_regime_state="neutral",
                     degraded=False,
                     reason_codes_json=["orderbook_bid_support_strong"],
-                    summary_json={"status": "healthy", "orderbook_status": "ready", "orderbook_ready": True},
+                    summary_json={"status": "healthy", "orderbook_status": "ready", "orderbook_ready": True, "hurst_status": "ready", "hurst_ready": True, "degraded_reasons": []},
                 ),
                 CiCryptoRegimeFeatureSnapshot(
                     run_id=newer_run.id,

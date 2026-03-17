@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
 from backend.app.common.adapters.models import OrderBookLevel, OrderBookSnapshot
+from backend.app.crypto.data.defillama_enrichment import DefiLlamaMarketSnapshot
 from backend.app.core.config import Settings
 from backend.app.db.session import get_session_factory
 from backend.app.models.core import (
@@ -12,6 +13,7 @@ from backend.app.models.core import (
     CiCryptoRegimeOrderbookSnapshot,
     CiCryptoRegimeRun,
     CiCryptoRegimeState,
+    Candle,
     FeatureSnapshot,
     RegimeSnapshot,
     SystemEvent,
@@ -117,6 +119,34 @@ def _seed_feature(
     )
 
 
+
+
+def _seed_hurst_candles(db, *, symbol: str, timeframe: str, end_at: datetime, bars: int, start_price: Decimal, step: Decimal) -> None:
+    for index in range(bars):
+        offset = bars - index
+        if timeframe == "1h":
+            timestamp = end_at - timedelta(hours=offset)
+        else:
+            timestamp = end_at - timedelta(hours=offset * 4)
+        close = start_price + (step * Decimal(index))
+        db.add(
+            Candle(
+                asset_class="crypto",
+                venue="kraken",
+                source="seed",
+                symbol=symbol,
+                timeframe=timeframe,
+                timestamp=timestamp,
+                open=close - Decimal("1"),
+                high=close + Decimal("2"),
+                low=close - Decimal("2"),
+                close=close,
+                volume=Decimal("1000"),
+                vwap=close,
+                trade_count=100,
+            )
+        )
+
 def _seed_full_ci_ready_state(db, *, now: datetime) -> None:
     _seed_crypto_universe(db, trade_date=now.date())
     _seed_core_regime(db, regime="bull", computed_at=now.replace(minute=0, second=0, microsecond=0))
@@ -165,6 +195,10 @@ def _seed_full_ci_ready_state(db, *, now: datetime) -> None:
             trend_slope_20="3",
             price_return_1="0.008",
         )
+    _seed_hurst_candles(db, symbol="XBTUSD", timeframe="1h", end_at=timestamp_1h, bars=240, start_price=Decimal("83000"), step=Decimal("4"))
+    _seed_hurst_candles(db, symbol="ETHUSD", timeframe="1h", end_at=timestamp_1h, bars=240, start_price=Decimal("4100"), step=Decimal("0.8"))
+    _seed_hurst_candles(db, symbol="XBTUSD", timeframe="4h", end_at=timestamp_4h, bars=120, start_price=Decimal("79000"), step=Decimal("15"))
+    _seed_hurst_candles(db, symbol="ETHUSD", timeframe="4h", end_at=timestamp_4h, bars=120, start_price=Decimal("3800"), step=Decimal("2.5"))
     db.flush()
 
 
@@ -194,6 +228,19 @@ def _fake_orderbook(symbol: str, depth: int) -> OrderBookSnapshot:
     return OrderBookSnapshot(symbol=symbol, as_of=timestamp, bids=tuple(bids), asks=tuple(asks), raw={"test": True})
 
 
+
+
+def _fake_defillama_snapshot() -> DefiLlamaMarketSnapshot:
+    return DefiLlamaMarketSnapshot(
+        funding_bias=0.0042,
+        open_interest_total=1_250_000_000.0,
+        defi_tvl_total=121_000_000_000.0,
+        defi_tvl_prev_24h=118_000_000_000.0,
+        derivatives_change_1d=6.8,
+        as_of_at=datetime(2026, 3, 16, 16, 15, 30, tzinfo=UTC),
+        raw={"matched_perps": 4},
+    )
+
 def test_ci_worker_persists_run_orderbook_and_api_routes(client) -> None:
     now = datetime(2026, 3, 16, 16, 15, 30, tzinfo=UTC)
 
@@ -220,6 +267,9 @@ def test_ci_worker_persists_run_orderbook_and_api_routes(client) -> None:
     assert current_payload["last_run_used_orderbook"] is True
     assert current_payload["orderbook_status"] == "ready"
     assert current_payload["orderbook_ready"] is True
+    assert current_payload["last_run_used_hurst"] is True
+    assert current_payload["hurst_status"] == "ready"
+    assert current_payload["hurst_ready"] is True
 
     history = client.get("/api/v1/ci/crypto-regime/history?limit=5")
     assert history.status_code == 200
@@ -243,12 +293,51 @@ def test_ci_worker_persists_run_orderbook_and_api_routes(client) -> None:
             row.feature_name
             for row in db.query(CiCryptoRegimeFeatureSnapshot).filter(CiCryptoRegimeFeatureSnapshot.run_id == run.id).all()
         }
-        assert run is not None and run.status == "success" and run.used_orderbook is True
+        assert run is not None and run.status == "success" and run.used_orderbook is True and run.used_hurst is True
         assert state is not None and state.state == "bull"
         assert len(orderbook_rows) == 2
         assert "microstructure_support_score" in feature_names
-        assert {event.event_type for event in events} >= {"ci_crypto_regime.run_started", "ci_crypto_regime.inference_complete"}
+        assert {event.event_type for event in events} >= {"ci_crypto_regime.run_started", "ci_crypto_regime.features_built", "ci_crypto_regime.inference_complete"}
 
+
+
+
+def test_ci_worker_uses_defillama_enrichment_when_enabled(client) -> None:
+    now = datetime(2026, 3, 16, 16, 15, 30, tzinfo=UTC)
+
+    with get_session_factory()() as db:
+        upsert_setting(db, key="CI_CRYPTO_REGIME_ENABLED", value="true", value_type="bool")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_USE_DEFILLAMA", value="true", value_type="bool")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS", value="1", value_type="integer")
+        _seed_full_ci_ready_state(db, now=now)
+        db.commit()
+
+    with get_session_factory()() as db:
+        summary = CiCryptoRegimeWorker(
+            db,
+            orderbook_fetcher=_fake_orderbook,
+            defillama_snapshot_fetcher=_fake_defillama_snapshot,
+        ).run(now=now)
+        assert summary.status == "success"
+        assert summary.state == "bull"
+
+    current = client.get("/api/v1/ci/crypto-regime/current")
+    assert current.status_code == 200
+    current_payload = current.json()
+    assert current_payload["last_run_used_defillama"] is True
+    assert current_payload["defillama_status"] == "ready"
+    assert current_payload["defillama_ready"] is True
+
+    with get_session_factory()() as db:
+        run = db.query(CiCryptoRegimeRun).order_by(CiCryptoRegimeRun.id.desc()).first()
+        state = db.query(CiCryptoRegimeState).order_by(CiCryptoRegimeState.id.desc()).first()
+        feature_names = {
+            row.feature_name
+            for row in db.query(CiCryptoRegimeFeatureSnapshot).filter(CiCryptoRegimeFeatureSnapshot.run_id == run.id).all()
+        }
+        assert run is not None and run.used_defillama is True
+        assert state is not None and state.summary_json["defillama_status"] == "ready"
+        assert {"market_funding_bias", "market_open_interest_z", "market_oi_change_24h", "market_defi_tvl_change_24h"}.issubset(feature_names)
 
 def test_ci_worker_falls_back_when_orderbook_is_unavailable(client) -> None:
     now = datetime(2026, 3, 16, 16, 15, 30, tzinfo=UTC)

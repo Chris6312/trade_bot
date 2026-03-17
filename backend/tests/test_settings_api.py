@@ -67,3 +67,6 @@ def test_runtime_snapshot_includes_ci_crypto_regime_status(client) -> None:
     assert payload["ci_crypto_regime"]["enabled"] is True
     assert payload["ci_crypto_regime"]["model_version"] == "ci_rules_v1"
     assert payload["ci_crypto_regime"]["use_orderbook"] is True
+    assert payload["ci_crypto_regime"]["use_defillama"] is False
+    assert payload["ci_crypto_regime"]["use_hurst"] is True
+    assert payload["ci_crypto_regime"]["degraded_reasons"] == []

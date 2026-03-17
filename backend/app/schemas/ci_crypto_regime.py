@@ -124,8 +124,15 @@ class CiCryptoRegimeCurrentRead(BaseModel):
     last_run_started_at: datetime | None = None
     last_run_completed_at: datetime | None = None
     last_run_used_orderbook: bool = False
+    last_run_used_defillama: bool = False
+    last_run_used_hurst: bool = False
     orderbook_status: str | None = None
     orderbook_ready: bool = False
+    defillama_status: str | None = None
+    defillama_ready: bool = False
+    hurst_status: str | None = None
+    hurst_ready: bool = False
+    degraded_reasons: list[str] = Field(default_factory=list)
 
 
 class CiCryptoRegimeHistoryRead(BaseModel):
@@ -166,5 +173,12 @@ class CiCryptoRegimeRuntimeStatusRead(BaseModel):
     last_run_started_at: datetime | None = None
     last_run_completed_at: datetime | None = None
     last_run_used_orderbook: bool = False
+    last_run_used_defillama: bool = False
+    last_run_used_hurst: bool = False
     orderbook_status: str | None = None
     orderbook_ready: bool = False
+    defillama_status: str | None = None
+    defillama_ready: bool = False
+    hurst_status: str | None = None
+    hurst_ready: bool = False
+    degraded_reasons: list[str] = Field(default_factory=list)

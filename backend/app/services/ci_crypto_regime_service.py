@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from math import sqrt
+from math import log, sqrt
 from statistics import fmean
 from typing import Any
 
@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.common.adapters.models import OrderBookLevel, OrderBookSnapshot
 from backend.app.core.config import get_settings
+from backend.app.crypto.data.defillama_enrichment import DefiLlamaMarketSnapshot, DefiLlamaMetricsAdapter
 from backend.app.crypto.data.kraken_orderbook import KrakenOrderBookAdapter
 from backend.app.models.core import (
     CiCryptoRegimeFeatureSnapshot,
@@ -19,6 +20,7 @@ from backend.app.models.core import (
     CiCryptoRegimeOrderbookSnapshot,
     CiCryptoRegimeRun,
     CiCryptoRegimeState,
+    Candle,
     FeatureSnapshot,
     RegimeSnapshot,
 )
@@ -57,6 +59,22 @@ CI_ORDERBOOK_FEATURE_CONTRACT = (
     "eth_sweep_cost_buy_5k_bps",
     "eth_sweep_cost_sell_5k_bps",
     "microstructure_support_score",
+)
+CI_DEFILLAMA_FEATURE_CONTRACT = (
+    "market_funding_bias",
+    "market_open_interest_z",
+    "market_oi_change_24h",
+    "market_defi_tvl_change_24h",
+)
+CI_DEFILLAMA_AUDIT_FEATURES = (
+    "market_open_interest_total",
+    "market_total_defi_tvl",
+)
+CI_HURST_FEATURE_CONTRACT = (
+    "btc_hurst_4h",
+    "btc_hurst_1h",
+    "eth_hurst_4h",
+    "eth_hurst_1h",
 )
 
 
@@ -129,6 +147,16 @@ class _OrderbookCollection:
 
 
 @dataclass(slots=True, frozen=True)
+class _FeatureCollection:
+    feature_values: list[_FeatureValue]
+    status: str
+    ready: bool
+    used: bool
+    degraded_reasons: list[str]
+    summary: dict[str, Any]
+
+
+@dataclass(slots=True, frozen=True)
 class _InferenceInputs:
     universe_symbols: tuple[str, ...]
     latest_core_regime: RegimeSnapshot | None
@@ -139,6 +167,12 @@ class _InferenceInputs:
     orderbook_status: str
     orderbook_ready: bool
     orderbook_used: bool
+    defillama_status: str
+    defillama_ready: bool
+    defillama_used: bool
+    hurst_status: str
+    hurst_ready: bool
+    hurst_used: bool
     degraded_reasons: list[str]
     stale: bool
     newest_feature_at: datetime | None
@@ -301,8 +335,15 @@ def build_ci_crypto_regime_current_snapshot(db: Session) -> dict[str, Any] | Non
         "last_run_started_at": run.run_started_at if run else None,
         "last_run_completed_at": run.run_completed_at if run else None,
         "last_run_used_orderbook": bool(run.used_orderbook) if run else False,
+        "last_run_used_defillama": bool(run.used_defillama) if run else False,
+        "last_run_used_hurst": bool(run.used_hurst) if run else False,
         "orderbook_status": summary.get("orderbook_status"),
         "orderbook_ready": bool(summary.get("orderbook_ready", False)),
+        "defillama_status": summary.get("defillama_status"),
+        "defillama_ready": bool(summary.get("defillama_ready", False)),
+        "hurst_status": summary.get("hurst_status"),
+        "hurst_ready": bool(summary.get("hurst_ready", False)),
+        "degraded_reasons": list(summary.get("degraded_reasons", [])),
     }
 
 
@@ -331,8 +372,15 @@ def build_ci_crypto_regime_runtime_status(db: Session) -> dict[str, Any]:
         "last_run_started_at": current.get("last_run_started_at") if current else None,
         "last_run_completed_at": current.get("last_run_completed_at") if current else None,
         "last_run_used_orderbook": bool(current.get("last_run_used_orderbook", False)) if current else False,
+        "last_run_used_defillama": bool(current.get("last_run_used_defillama", False)) if current else False,
+        "last_run_used_hurst": bool(current.get("last_run_used_hurst", False)) if current else False,
         "orderbook_status": current.get("orderbook_status") if current else None,
         "orderbook_ready": bool(current.get("orderbook_ready", False)) if current else False,
+        "defillama_status": current.get("defillama_status") if current else None,
+        "defillama_ready": bool(current.get("defillama_ready", False)) if current else False,
+        "hurst_status": current.get("hurst_status") if current else None,
+        "hurst_ready": bool(current.get("hurst_ready", False)) if current else False,
+        "degraded_reasons": list(current.get("degraded_reasons", [])) if current else [],
     }
 
 
@@ -366,6 +414,7 @@ def run_ci_crypto_regime_advisory(
     *,
     now: datetime | None = None,
     orderbook_fetcher: Callable[[str, int], OrderBookSnapshot] | None = None,
+    defillama_snapshot_fetcher: Callable[[], DefiLlamaMarketSnapshot] | None = None,
 ) -> CiCryptoRegimeRunSummary:
     runtime = resolve_ci_crypto_regime_settings(db)
     run_time = ensure_utc(now) or datetime.now(UTC)
@@ -379,6 +428,8 @@ def run_ci_crypto_regime_advisory(
             settings=runtime,
             degraded=False,
             used_orderbook=False,
+            used_defillama=False,
+            used_hurst=False,
             data_window_end_at=run_time,
         )
         _emit_worker_event(
@@ -409,6 +460,8 @@ def run_ci_crypto_regime_advisory(
             settings=runtime,
             degraded=False,
             used_orderbook=False,
+            used_defillama=False,
+            used_hurst=False,
             data_window_end_at=run_time,
         )
         _emit_worker_event(
@@ -437,7 +490,26 @@ def run_ci_crypto_regime_advisory(
         payload={"model_version": model.model_version, "mode": runtime.mode, "advisory_only": runtime.advisory_only},
     )
 
-    inputs = _collect_inference_inputs(db, runtime=runtime, run_time=run_time, orderbook_fetcher=orderbook_fetcher)
+    inputs = _collect_inference_inputs(
+        db,
+        runtime=runtime,
+        run_time=run_time,
+        orderbook_fetcher=orderbook_fetcher,
+        defillama_snapshot_fetcher=defillama_snapshot_fetcher,
+    )
+    if inputs is not None:
+        _emit_worker_event(
+            db,
+            event_type="ci_crypto_regime.features_built",
+            severity="info",
+            message="CI crypto regime advisory feature inputs were collected.",
+            payload={
+                "orderbook_status": inputs.orderbook_status,
+                "defillama_status": inputs.defillama_status,
+                "hurst_status": inputs.hurst_status,
+                "degraded_reasons": inputs.degraded_reasons,
+            },
+        )
     if inputs is None:
         run = _create_run(
             db,
@@ -447,6 +519,8 @@ def run_ci_crypto_regime_advisory(
             settings=runtime,
             degraded=False,
             used_orderbook=False,
+            used_defillama=False,
+            used_hurst=False,
             data_window_end_at=run_time,
         )
         _emit_worker_event(
@@ -476,6 +550,8 @@ def run_ci_crypto_regime_advisory(
             settings=runtime,
             degraded=False,
             used_orderbook=False,
+            used_defillama=False,
+            used_hurst=False,
             data_window_end_at=inputs.newest_feature_at or run_time,
         )
         _write_feature_rows(db, run_id=run.id, feature_values=inputs.feature_values)
@@ -508,6 +584,8 @@ def run_ci_crypto_regime_advisory(
         settings=runtime,
         degraded=computed.degraded,
         used_orderbook=inputs.orderbook_used,
+        used_defillama=inputs.defillama_used,
+        used_hurst=inputs.hurst_used,
         data_window_end_at=inputs.newest_feature_at or run_time,
     )
     _write_feature_rows(db, run_id=run.id, feature_values=inputs.feature_values)
@@ -541,7 +619,11 @@ def run_ci_crypto_regime_advisory(
             "advisory_action": state.advisory_action,
             "degraded": state.degraded,
             "used_orderbook": run.used_orderbook,
+            "used_defillama": run.used_defillama,
+            "used_hurst": run.used_hurst,
             "orderbook_status": computed.summary.get("orderbook_status"),
+            "defillama_status": computed.summary.get("defillama_status"),
+            "hurst_status": computed.summary.get("hurst_status"),
         },
     )
     db.commit()
@@ -564,6 +646,7 @@ def _collect_inference_inputs(
     runtime: CiCryptoRegimeSettings,
     run_time: datetime,
     orderbook_fetcher: Callable[[str, int], OrderBookSnapshot] | None,
+    defillama_snapshot_fetcher: Callable[[], DefiLlamaMarketSnapshot] | None,
 ) -> _InferenceInputs | None:
     core_regime = get_latest_regime_snapshot(db, asset_class="crypto", timeframe="1h")
     if core_regime is None:
@@ -592,7 +675,17 @@ def _collect_inference_inputs(
 
     feature_values = _build_feature_values(feature_rows_1h=feature_rows_1h, feature_rows_4h=feature_rows_4h, run_time=run_time)
     orderbook = _collect_orderbook_inputs(db, runtime=runtime, run_time=run_time, orderbook_fetcher=orderbook_fetcher)
+    defillama = _collect_defillama_inputs(
+        db,
+        runtime=runtime,
+        run_time=run_time,
+        snapshot_fetcher=defillama_snapshot_fetcher,
+    )
+    hurst = _collect_hurst_inputs(db, runtime=runtime, run_time=run_time)
     feature_values.extend(orderbook.feature_values)
+    feature_values.extend(defillama.feature_values)
+    feature_values.extend(hurst.feature_values)
+    degraded_reasons = sorted(set([*orderbook.degraded_reasons, *defillama.degraded_reasons, *hurst.degraded_reasons]))
 
     return _InferenceInputs(
         universe_symbols=universe_symbols,
@@ -604,7 +697,13 @@ def _collect_inference_inputs(
         orderbook_status=orderbook.status,
         orderbook_ready=orderbook.ready,
         orderbook_used=orderbook.used,
-        degraded_reasons=orderbook.degraded_reasons,
+        defillama_status=defillama.status,
+        defillama_ready=defillama.ready,
+        defillama_used=defillama.used,
+        hurst_status=hurst.status,
+        hurst_ready=hurst.ready,
+        hurst_used=hurst.used,
+        degraded_reasons=degraded_reasons,
         stale=stale,
         newest_feature_at=newest_feature_at,
         oldest_required_feature_at=oldest_required_feature_at,
@@ -661,6 +760,140 @@ def _build_feature_values(
         _feature_value("btc_return_z_1h", z_scores.get("XBTUSD"), "derived", "XBTUSD", "1h", btc_1h.candle_timestamp if btc_1h else None),
         _feature_value("eth_return_z_1h", z_scores.get("ETHUSD"), "derived", "ETHUSD", "1h", eth_1h.candle_timestamp if eth_1h else None),
     ]
+
+
+def _collect_defillama_inputs(
+    db: Session,
+    *,
+    runtime: CiCryptoRegimeSettings,
+    run_time: datetime,
+    snapshot_fetcher: Callable[[], DefiLlamaMarketSnapshot] | None,
+) -> _FeatureCollection:
+    if not runtime.use_defillama:
+        return _FeatureCollection(feature_values=[], status="disabled", ready=False, used=False, degraded_reasons=[], summary={})
+
+    adapter: DefiLlamaMetricsAdapter | None = None
+    fetcher = snapshot_fetcher
+    if fetcher is None:
+        adapter = DefiLlamaMetricsAdapter()
+        fetcher = adapter.fetch_market_snapshot
+
+    try:
+        assert fetcher is not None
+        snapshot = fetcher()
+    except Exception as exc:  # pragma: no cover - exercised through runtime fallback/tests via injected failure
+        _emit_worker_event(
+            db,
+            event_type="ci_crypto_regime.defillama_unavailable",
+            severity="warning",
+            message="DeFiLlama enrichment was unavailable for the CI crypto regime advisory run.",
+            payload={"error": f"{type(exc).__name__}: {exc}"},
+        )
+        return _FeatureCollection(
+            feature_values=_missing_named_features(CI_DEFILLAMA_FEATURE_CONTRACT + CI_DEFILLAMA_AUDIT_FEATURES, source="defillama", symbol_scope="market", as_of_at=run_time),
+            status="unavailable",
+            ready=False,
+            used=False,
+            degraded_reasons=["defillama_unavailable"],
+            summary={},
+        )
+    finally:
+        if adapter is not None:
+            adapter.close()
+
+    open_interest_total = snapshot.open_interest_total
+    funding_bias = snapshot.funding_bias
+    total_tvl = snapshot.defi_tvl_total
+    oi_z = _rolling_feature_zscore(db, feature_name="market_open_interest_total", current_value=open_interest_total)
+    if oi_z is None and snapshot.derivatives_change_1d is not None:
+        oi_z = round(max(-3.0, min(3.0, snapshot.derivatives_change_1d / 10.0)), 6)
+    oi_change = _feature_change_pct(
+        db,
+        feature_name="market_open_interest_total",
+        current_value=open_interest_total,
+        as_of_at=snapshot.as_of_at,
+        lookback_hours=24,
+    )
+    if oi_change is None:
+        oi_change = snapshot.derivatives_change_1d
+    tvl_change = _pct_change(current=total_tvl, previous=snapshot.defi_tvl_prev_24h)
+
+    feature_values = [
+        _feature_value("market_funding_bias", funding_bias, "defillama", "market", None, snapshot.as_of_at),
+        _feature_value("market_open_interest_z", oi_z, "defillama", "market", None, snapshot.as_of_at),
+        _feature_value("market_oi_change_24h", oi_change, "defillama", "market", None, snapshot.as_of_at),
+        _feature_value("market_defi_tvl_change_24h", tvl_change, "defillama", "market", None, snapshot.as_of_at),
+        _feature_value("market_open_interest_total", open_interest_total, "defillama", "market", None, snapshot.as_of_at),
+        _feature_value("market_total_defi_tvl", total_tvl, "defillama", "market", None, snapshot.as_of_at),
+    ]
+
+    contract_values = {item.feature_name: item.feature_value for item in feature_values if item.feature_name in CI_DEFILLAMA_FEATURE_CONTRACT}
+    degraded_reasons: list[str] = []
+    if contract_values["market_open_interest_z"] is None:
+        degraded_reasons.append("defillama_oi_history_warmup")
+    if any(contract_values[name] is None for name in ("market_funding_bias", "market_oi_change_24h", "market_defi_tvl_change_24h")):
+        degraded_reasons.append("defillama_partial")
+
+    ready = all(contract_values[name] is not None for name in CI_DEFILLAMA_FEATURE_CONTRACT)
+    if ready:
+        status = "ready"
+    elif funding_bias is None and total_tvl is None and open_interest_total is None:
+        status = "unavailable"
+    elif open_interest_total is not None or total_tvl is not None or funding_bias is not None:
+        status = "warming" if "defillama_oi_history_warmup" in degraded_reasons else "partial"
+    else:
+        status = "unavailable"
+    return _FeatureCollection(
+        feature_values=feature_values,
+        status=status,
+        ready=ready,
+        used=ready,
+        degraded_reasons=sorted(set(degraded_reasons)) if not ready else [],
+        summary={"raw": snapshot.raw},
+    )
+
+
+def _collect_hurst_inputs(
+    db: Session,
+    *,
+    runtime: CiCryptoRegimeSettings,
+    run_time: datetime,
+) -> _FeatureCollection:
+    if not runtime.use_hurst:
+        return _FeatureCollection(feature_values=[], status="disabled", ready=False, used=False, degraded_reasons=[], summary={})
+
+    feature_values: list[_FeatureValue] = []
+    availability: list[bool] = []
+    for symbol, timeframe, required_bars, feature_name in (
+        ("XBTUSD", "4h", max(64, runtime.min_bars_4h), "btc_hurst_4h"),
+        ("XBTUSD", "1h", max(64, runtime.min_bars_1h), "btc_hurst_1h"),
+        ("ETHUSD", "4h", max(64, runtime.min_bars_4h), "eth_hurst_4h"),
+        ("ETHUSD", "1h", max(64, runtime.min_bars_1h), "eth_hurst_1h"),
+    ):
+        rows = _recent_candles(db, symbol=symbol, timeframe=timeframe, limit=required_bars)
+        hurst = _hurst_exponent([float(row.close) for row in rows]) if len(rows) >= required_bars else None
+        as_of_at = rows[-1].timestamp if rows else run_time
+        feature_values.append(_feature_value(feature_name, hurst, "derived", symbol, timeframe, as_of_at))
+        availability.append(hurst is not None)
+
+    ready = all(availability) and bool(availability)
+    if ready:
+        status = "ready"
+        degraded_reasons: list[str] = []
+    elif any(availability):
+        status = "partial"
+        degraded_reasons = ["hurst_partial"]
+    else:
+        status = "warming"
+        degraded_reasons = ["hurst_unavailable"]
+    return _FeatureCollection(
+        feature_values=feature_values,
+        status=status,
+        ready=ready,
+        used=ready,
+        degraded_reasons=degraded_reasons,
+        summary={},
+    )
 
 
 def _collect_orderbook_inputs(
@@ -769,9 +1002,15 @@ def _compute_rules_inference(
 
     microstructure = feature_map.get("microstructure_support_score")
     microstructure_score = float(microstructure.feature_value) if microstructure and microstructure.feature_value is not None else None
+    defillama_support = _defillama_support_score(feature_map)
+    hurst_support = _hurst_support_score(feature_map)
     composite = base_composite
     if inputs.orderbook_used and microstructure_score is not None:
-        composite = round((base_composite * 0.80) + (microstructure_score * 0.20), 6)
+        composite = round((composite * 0.80) + (microstructure_score * 0.20), 6)
+    if inputs.defillama_used and defillama_support is not None:
+        composite = round((composite * 0.85) + (defillama_support * 0.15), 6)
+    if inputs.hurst_used and hurst_support is not None:
+        composite = round((composite * 0.90) + (hurst_support * 0.10), 6)
 
     degraded_reasons = list(inputs.degraded_reasons)
     degraded = bool(degraded_reasons)
@@ -784,15 +1023,33 @@ def _compute_rules_inference(
     elif composite >= 0.67 and breadth_score >= 0.55 and trend_score >= 0.50:
         state = "bull"
         confidence = _confidence_from_score(state=state, score=composite)
-        reason_codes = _reason_codes(feature_map=feature_map, composite=composite, orderbook_status=inputs.orderbook_status)
+        reason_codes = _reason_codes(
+            feature_map=feature_map,
+            composite=composite,
+            orderbook_status=inputs.orderbook_status,
+            defillama_status=inputs.defillama_status,
+            hurst_status=inputs.hurst_status,
+        )
     elif composite >= 0.40 and breadth_score >= 0.25:
         state = "neutral"
         confidence = _confidence_from_score(state=state, score=composite)
-        reason_codes = _reason_codes(feature_map=feature_map, composite=composite, orderbook_status=inputs.orderbook_status)
+        reason_codes = _reason_codes(
+            feature_map=feature_map,
+            composite=composite,
+            orderbook_status=inputs.orderbook_status,
+            defillama_status=inputs.defillama_status,
+            hurst_status=inputs.hurst_status,
+        )
     else:
         state = "risk_off"
         confidence = _confidence_from_score(state=state, score=composite)
-        reason_codes = _reason_codes(feature_map=feature_map, composite=composite, orderbook_status=inputs.orderbook_status)
+        reason_codes = _reason_codes(
+            feature_map=feature_map,
+            composite=composite,
+            orderbook_status=inputs.orderbook_status,
+            defillama_status=inputs.defillama_status,
+            hurst_status=inputs.hurst_status,
+        )
 
     core_regime_state = inputs.latest_core_regime.regime if inputs.latest_core_regime is not None else None
     if core_regime_state is None or core_regime_state not in CI_ALLOWED_STATES:
@@ -817,6 +1074,8 @@ def _compute_rules_inference(
         "volatility_support_score": round(vol_support, 6),
         "return_support_score": round(z_support, 6),
         "microstructure_support_score": round(microstructure_score, 6) if microstructure_score is not None else None,
+        "defillama_support_score": round(defillama_support, 6) if defillama_support is not None else None,
+        "hurst_support_score": round(hurst_support, 6) if hurst_support is not None else None,
         "core_regime_state": core_regime_state,
         "feature_contract_version": CI_FEATURE_SET_VERSION,
         "run_interval_minutes": runtime.run_interval_minutes,
@@ -826,6 +1085,12 @@ def _compute_rules_inference(
         "orderbook_status": inputs.orderbook_status,
         "orderbook_ready": inputs.orderbook_ready,
         "orderbook_used": inputs.orderbook_used,
+        "defillama_status": inputs.defillama_status,
+        "defillama_ready": inputs.defillama_ready,
+        "defillama_used": inputs.defillama_used,
+        "hurst_status": inputs.hurst_status,
+        "hurst_ready": inputs.hurst_ready,
+        "hurst_used": inputs.hurst_used,
         "degraded_reasons": degraded_reasons,
     }
     return _ComputedInference(
@@ -852,6 +1117,8 @@ def _create_run(
     settings: CiCryptoRegimeSettings,
     degraded: bool,
     used_orderbook: bool,
+    used_defillama: bool,
+    used_hurst: bool,
     data_window_end_at: datetime,
 ) -> CiCryptoRegimeRun:
     run = CiCryptoRegimeRun(
@@ -862,8 +1129,8 @@ def _create_run(
         model_version=settings.model_version,
         feature_set_version=CI_FEATURE_SET_VERSION,
         used_orderbook=used_orderbook,
-        used_defillama=False,
-        used_hurst=False,
+        used_defillama=used_defillama,
+        used_hurst=used_hurst,
         data_window_end_at=data_window_end_at,
         error_message=None,
         degraded=degraded,
@@ -978,6 +1245,109 @@ def _latest_core_regime_for_display(db: Session) -> RegimeSnapshot | None:
         .order_by(RegimeSnapshot.computed_at.desc(), RegimeSnapshot.id.desc())
         .first()
     )
+
+
+def _recent_candles(db: Session, *, symbol: str, timeframe: str, limit: int) -> list[Candle]:
+    rows = (
+        db.query(Candle)
+        .filter(Candle.asset_class == "crypto", Candle.symbol == symbol, Candle.timeframe == timeframe)
+        .order_by(Candle.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+    return list(reversed(rows))
+
+
+def _recent_ci_feature_values(db: Session, *, feature_name: str, limit: int = 96) -> list[tuple[datetime | None, float]]:
+    rows = (
+        db.query(CiCryptoRegimeFeatureSnapshot)
+        .filter(CiCryptoRegimeFeatureSnapshot.feature_name == feature_name, CiCryptoRegimeFeatureSnapshot.feature_value.isnot(None))
+        .order_by(CiCryptoRegimeFeatureSnapshot.as_of_at.desc(), CiCryptoRegimeFeatureSnapshot.id.desc())
+        .limit(limit)
+        .all()
+    )
+    ordered = list(reversed(rows))
+    return [(ensure_utc(row.as_of_at), float(row.feature_value)) for row in ordered if row.feature_value is not None]
+
+
+def _rolling_feature_zscore(db: Session, *, feature_name: str, current_value: float | None) -> float | None:
+    if current_value is None:
+        return None
+    history = [value for _, value in _recent_ci_feature_values(db, feature_name=feature_name, limit=96)]
+    values = [*history, current_value]
+    if len(values) < 3:
+        return None
+    mean_value = fmean(values)
+    variance = sum((value - mean_value) ** 2 for value in values) / len(values)
+    stddev = sqrt(variance)
+    if stddev <= 0:
+        return 0.0
+    return round((current_value - mean_value) / stddev, 6)
+
+
+def _feature_change_pct(
+    db: Session,
+    *,
+    feature_name: str,
+    current_value: float | None,
+    as_of_at: datetime | None,
+    lookback_hours: int,
+) -> float | None:
+    if current_value is None:
+        return None
+    anchor = ensure_utc(as_of_at) or datetime.now(UTC)
+    cutoff = anchor - timedelta(hours=max(1, lookback_hours))
+    candidates = [(as_of_at, value) for as_of_at, value in _recent_ci_feature_values(db, feature_name=feature_name, limit=192) if as_of_at is not None and as_of_at <= cutoff]
+    if not candidates:
+        return None
+    return _pct_change(current=current_value, previous=candidates[-1][1])
+
+
+def _pct_change(*, current: float | None, previous: float | None) -> float | None:
+    if current is None or previous is None or abs(previous) <= 1e-12:
+        return None
+    return round(((current - previous) / abs(previous)) * 100.0, 6)
+
+
+def _missing_named_features(names: tuple[str, ...], *, source: str, symbol_scope: str, as_of_at: datetime) -> list[_FeatureValue]:
+    return [_feature_value(name, None, source, symbol_scope, None, as_of_at) for name in names]
+
+
+def _hurst_exponent(values: list[float], *, max_lag: int = 20) -> float | None:
+    clean = [value for value in values if value is not None and value > 0]
+    if len(clean) < max(32, max_lag + 2):
+        return None
+    logs = [log(value) for value in clean]
+    upper_lag = min(max_lag, max(5, len(logs) // 4))
+    x_values: list[float] = []
+    y_values: list[float] = []
+    for lag in range(2, upper_lag + 1):
+        diffs = [logs[index] - logs[index - lag] for index in range(lag, len(logs))]
+        if len(diffs) < 2:
+            continue
+        variance = sum(diff * diff for diff in diffs) / len(diffs)
+        if variance <= 0:
+            continue
+        tau = sqrt(variance)
+        x_values.append(log(float(lag)))
+        y_values.append(log(tau))
+    slope = _linear_regression_slope(x_values, y_values)
+    if slope is None:
+        return None
+    hurst = max(0.0, min(1.0, slope * 2.0))
+    return round(hurst, 6)
+
+
+def _linear_regression_slope(x_values: list[float], y_values: list[float]) -> float | None:
+    if len(x_values) != len(y_values) or len(x_values) < 2:
+        return None
+    x_mean = fmean(x_values)
+    y_mean = fmean(y_values)
+    denominator = sum((value - x_mean) ** 2 for value in x_values)
+    if denominator <= 0:
+        return None
+    numerator = sum((x - x_mean) * (y - y_mean) for x, y in zip(x_values, y_values, strict=False))
+    return numerator / denominator
 
 
 def _orderbook_history_counts(db: Session) -> dict[str, int]:
@@ -1177,6 +1547,34 @@ def _volatility_support_score(*, vol_1h: float, vol_4h: float) -> float:
     return round((score_1h * 0.6) + (score_4h * 0.4), 6)
 
 
+def _defillama_support_score(feature_map: dict[str, _FeatureValue]) -> float | None:
+    funding = _normalize_range(_feature_float(feature_map, "market_funding_bias"), floor=-0.01, ceiling=0.01)
+    oi_z = _normalize_range(_feature_float(feature_map, "market_open_interest_z"), floor=-2.0, ceiling=2.0)
+    oi_change = _normalize_range(_feature_float(feature_map, "market_oi_change_24h"), floor=-25.0, ceiling=25.0)
+    tvl_change = _normalize_range(_feature_float(feature_map, "market_defi_tvl_change_24h"), floor=-10.0, ceiling=10.0)
+    return _mean_optional([funding, oi_z, oi_change, tvl_change])
+
+
+def _hurst_support_score(feature_map: dict[str, _FeatureValue]) -> float | None:
+    values = [_feature_float(feature_map, name) for name in CI_HURST_FEATURE_CONTRACT]
+    normalized = [_normalize_range(value, floor=0.35, ceiling=0.75) for value in values if value is not None]
+    return _mean_optional(normalized)
+
+
+def _feature_float(feature_map: dict[str, _FeatureValue], name: str) -> float | None:
+    feature = feature_map.get(name)
+    if feature is None or feature.feature_value is None:
+        return None
+    return float(feature.feature_value)
+
+
+def _normalize_range(value: float | None, *, floor: float, ceiling: float) -> float | None:
+    if value is None or ceiling <= floor:
+        return None
+    clipped = max(floor, min(ceiling, value))
+    return round((clipped - floor) / (ceiling - floor), 6)
+
+
 def _probability_for_state(*, state: str, chosen_state: str, score: float) -> float:
     if chosen_state == "unavailable":
         return 0.34 if state == "neutral" else 0.33
@@ -1196,7 +1594,14 @@ def _confidence_from_score(*, state: str, score: float) -> float:
     return round(min(0.85, 0.55 + max(0.0, 0.20 - distance)), 5)
 
 
-def _reason_codes(*, feature_map: dict[str, _FeatureValue], composite: float, orderbook_status: str) -> list[str]:
+def _reason_codes(
+    *,
+    feature_map: dict[str, _FeatureValue],
+    composite: float,
+    orderbook_status: str,
+    defillama_status: str,
+    hurst_status: str,
+) -> list[str]:
     reasons: list[str] = []
     if (feature_map["btc_trend_4h"].feature_value or 0.0) < 1.0:
         reasons.append("btc_trend_4h_soft")
@@ -1226,6 +1631,34 @@ def _reason_codes(*, feature_map: dict[str, _FeatureValue], composite: float, or
         reasons.append("orderbook_warmup_pending")
     elif orderbook_status in {"partial", "unavailable"}:
         reasons.append("orderbook_unavailable")
+    defillama = feature_map.get("market_funding_bias")
+    if defillama is not None and defillama.feature_value is not None:
+        if defillama.feature_value >= 0.003:
+            reasons.append("defillama_funding_support_strong")
+        elif defillama.feature_value >= 0.0:
+            reasons.append("defillama_funding_support_mixed")
+        else:
+            reasons.append("defillama_funding_support_weak")
+    elif defillama_status == "warming":
+        reasons.append("defillama_warmup_pending")
+    elif defillama_status in {"partial", "unavailable"}:
+        reasons.append("defillama_unavailable")
+    hurst = _mean_optional([
+        feature_map[name].feature_value
+        for name in CI_HURST_FEATURE_CONTRACT
+        if name in feature_map
+    ])
+    if hurst is not None:
+        if hurst >= 0.58:
+            reasons.append("hurst_trend_persistence_strong")
+        elif hurst >= 0.50:
+            reasons.append("hurst_trend_persistence_mixed")
+        else:
+            reasons.append("hurst_trend_persistence_weak")
+    elif hurst_status == "warming":
+        reasons.append("hurst_warmup_pending")
+    elif hurst_status in {"partial", "unavailable"}:
+        reasons.append("hurst_unavailable")
     if composite >= 0.67:
         reasons.append("composite_bull_threshold")
     elif composite >= 0.40:

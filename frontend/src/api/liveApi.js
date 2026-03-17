@@ -13,8 +13,8 @@ import {
 const DEFAULT_API_ORIGIN = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8101').replace(/\/$/, '');
 export const API_BASE = `${DEFAULT_API_ORIGIN}/api/v1`;
 
-const STOCK_TIMEFRAMES = ['1h', '15m', '5m', '1d'];
-const CRYPTO_TIMEFRAMES = ['4h', '1h', '15m', '1d'];
+const STOCK_TIMEFRAMES = ['1h', '15m', '5m'];
+const CRYPTO_TIMEFRAMES = ['4h', '1h', '15m'];
 
 const CONTROL_MAP = {
   refresh_universe: { path: '/controls/universe/run-once', timeoutMs: 90000, buildPayload: () => ({ asset_class: 'all', force: true }) },

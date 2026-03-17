@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session
 
 from backend.app.common.adapters.models import OrderBookSnapshot
+from backend.app.crypto.data.defillama_enrichment import DefiLlamaMarketSnapshot
 from backend.app.core.config import Settings, get_settings
 from backend.app.services.ci_crypto_regime_service import (
     CiCryptoRegimeRunSummary,
@@ -38,10 +39,12 @@ class CiCryptoRegimeWorker:
         *,
         settings: Settings | None = None,
         orderbook_fetcher: Callable[[str, int], OrderBookSnapshot] | None = None,
+        defillama_snapshot_fetcher: Callable[[], DefiLlamaMarketSnapshot] | None = None,
     ) -> None:
         self.db = db
         self.settings = settings or get_settings()
         self.orderbook_fetcher = orderbook_fetcher
+        self.defillama_snapshot_fetcher = defillama_snapshot_fetcher
 
     def run_if_due(
         self,
@@ -79,6 +82,7 @@ class CiCryptoRegimeWorker:
             self.db,
             now=run_time,
             orderbook_fetcher=self.orderbook_fetcher,
+            defillama_snapshot_fetcher=self.defillama_snapshot_fetcher,
         )
         logger.info(
             "ci_crypto_regime_worker_completed",

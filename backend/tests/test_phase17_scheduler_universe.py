@@ -243,3 +243,91 @@ def test_phase17_strategy_route_filters_to_current_universe_symbols(client) -> N
     assert response.status_code == 200
     payload = response.json()
     assert [row["symbol"] for row in payload] == ["AAPL"]
+
+
+
+def test_phase17_universe_route_uses_best_strategy_block_reason_not_reason_union(client) -> None:
+    with get_session_factory()() as db:
+        now = datetime.now(UTC).replace(second=0, microsecond=0)
+        trade_date = trading_date_for_now(now)
+        run = UniverseRun(
+            asset_class="stock",
+            venue="alpaca",
+            trade_date=trade_date,
+            source="ai",
+            status="resolved",
+            resolved_at=now,
+            payload={"resolution": "ai"},
+        )
+        db.add(run)
+        db.flush()
+        db.add(
+            UniverseConstituent(
+                universe_run_id=run.id,
+                asset_class="stock",
+                venue="alpaca",
+                symbol="NVDA",
+                rank=1,
+                source="ai",
+                selection_reason="selected",
+                payload={},
+            )
+        )
+        db.add_all([
+            StrategySnapshot(
+                asset_class="stock",
+                venue="alpaca",
+                source="strategy_engine",
+                symbol="NVDA",
+                strategy_name="opening_range_breakout_long",
+                direction="long",
+                timeframe="5m",
+                candidate_timestamp=now - timedelta(minutes=5),
+                computed_at=now - timedelta(minutes=5),
+                regime="neutral",
+                entry_policy="reduced",
+                status="blocked",
+                readiness_score=Decimal("0.61"),
+                composite_score=Decimal("0.64"),
+                threshold_score=Decimal("0.70"),
+                trend_score=Decimal("0.66"),
+                participation_score=Decimal("0.62"),
+                liquidity_score=Decimal("0.71"),
+                stability_score=Decimal("0.65"),
+                blocked_reasons=["composite_below_threshold"],
+                decision_reason="composite_below_threshold",
+                payload={},
+            ),
+            StrategySnapshot(
+                asset_class="stock",
+                venue="alpaca",
+                source="strategy_engine",
+                symbol="NVDA",
+                strategy_name="trend_pullback_long",
+                direction="long",
+                timeframe="1h",
+                candidate_timestamp=now - timedelta(minutes=5),
+                computed_at=now - timedelta(minutes=5),
+                regime="neutral",
+                entry_policy="reduced",
+                status="blocked",
+                readiness_score=Decimal("0.0"),
+                composite_score=Decimal("0.0"),
+                threshold_score=Decimal("0.70"),
+                trend_score=Decimal("0.0"),
+                participation_score=Decimal("0.0"),
+                liquidity_score=Decimal("0.0"),
+                stability_score=Decimal("0.0"),
+                blocked_reasons=["missing_feature_snapshot"],
+                decision_reason="missing_feature_snapshot",
+                payload={},
+            ),
+        ])
+        db.commit()
+
+    response = client.get("/api/v1/universe/stock/current")
+    assert response.status_code == 200
+    payload = response.json()[0]["payload"]
+    assert payload["block_reason"] == "composite_below_threshold"
+    assert payload["readiness_score"] == 0.61
+    assert payload["composite_score"] == 0.64

@@ -64,16 +64,28 @@ class AlpacaStockOhlcvAdapter:
         if resolved_feed:
             params["feed"] = resolved_feed
 
-        payload = self._client.request_json("GET", "/v2/stocks/bars", params=params)
-        bars_payload = payload.get("bars")
-        if not isinstance(bars_payload, dict):
-            raise AdapterParseError("Alpaca bars payload missing bars object")
+        parsed: dict[str, list[OhlcvBar]] = {symbol: [] for symbol in symbols}
+        page_token: str | None = None
 
-        parsed: dict[str, list[OhlcvBar]] = {}
-        for symbol, rows in bars_payload.items():
-            if not isinstance(rows, list):
-                raise AdapterParseError(f"Alpaca bars for {symbol} must be a list")
-            parsed[symbol] = [self._parse_bar(symbol, timeframe, row) for row in rows]
+        while True:
+            request_params = dict(params)
+            if page_token:
+                request_params["page_token"] = page_token
+
+            payload = self._client.request_json("GET", "/v2/stocks/bars", params=request_params)
+            bars_payload = payload.get("bars")
+            if not isinstance(bars_payload, dict):
+                raise AdapterParseError("Alpaca bars payload missing bars object")
+
+            for symbol, rows in bars_payload.items():
+                if not isinstance(rows, list):
+                    raise AdapterParseError(f"Alpaca bars for {symbol} must be a list")
+                parsed.setdefault(symbol, []).extend(self._parse_bar(symbol, timeframe, row) for row in rows)
+
+            next_page_token = payload.get("next_page_token")
+            if not isinstance(next_page_token, str) or not next_page_token.strip():
+                break
+            page_token = next_page_token.strip()
 
         return parsed
 

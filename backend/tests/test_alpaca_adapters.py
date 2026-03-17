@@ -75,3 +75,44 @@ def test_alpaca_stock_ohlcv_fetch_defaults_to_iex_feed(monkeypatch) -> None:
 
     assert list(bars.keys()) == ["AAPL", "MSFT"]
     assert str(bars["AAPL"][0].close) == "211.9"
+
+
+
+def test_alpaca_stock_ohlcv_fetch_follows_next_page_token(monkeypatch) -> None:
+    _seed_alpaca_env(monkeypatch)
+    seen_tokens: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v2/stocks/bars"
+        seen_tokens.append(request.url.params.get("page_token"))
+        if request.url.params.get("page_token") is None:
+            return httpx.Response(
+                200,
+                json={
+                    "bars": {
+                        "AAPL": [
+                            {"t": "2026-03-13T14:30:00Z", "o": 211.5, "h": 212.1, "l": 210.8, "c": 211.9, "v": 12345, "n": 321, "vw": 211.6}
+                        ]
+                    },
+                    "next_page_token": "page-2",
+                },
+            )
+        assert request.url.params["page_token"] == "page-2"
+        return httpx.Response(
+            200,
+            json={
+                "bars": {
+                    "UBER": [
+                        {"t": "2026-03-13T14:30:00Z", "o": 80.1, "h": 80.4, "l": 79.8, "c": 80.2, "v": 9999, "n": 222, "vw": 80.15}
+                    ]
+                }
+            },
+        )
+
+    adapter = AlpacaStockOhlcvAdapter(get_settings(), transport=httpx.MockTransport(handler))
+    bars = adapter.fetch_ohlcv(symbols=["AAPL", "UBER"], timeframe="1m", start="2026-03-13T14:30:00Z")
+
+    assert seen_tokens == [None, "page-2"]
+    assert list(bars.keys()) == ["AAPL", "UBER"]
+    assert str(bars["AAPL"][0].close) == "211.9"
+    assert str(bars["UBER"][0].close) == "80.2"

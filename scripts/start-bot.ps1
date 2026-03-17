@@ -276,8 +276,9 @@ function Invoke-StartupPipeline {
     )
 
     $allAssetsPayload = @{ asset_class = 'all'; force = $true }
+    $universeOnlyPayload = @{ asset_class = 'all'; force = $true; cascade = $false }
 
-    Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/universe/run-once' -Payload $allAssetsPayload -Label 'Universe refresh' | Out-Null
+    Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/universe/run-once' -Payload $universeOnlyPayload -Label 'Universe refresh' | Out-Null
     Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/candles/backfill' -Payload $allAssetsPayload -Label 'Candle backfill' -TimeoutSeconds 300 | Out-Null
     Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/regime/run-once' -Payload $allAssetsPayload -Label 'Regime recompute' | Out-Null
     Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/strategy/run-once' -Payload $allAssetsPayload -Label 'Strategy refresh' | Out-Null
