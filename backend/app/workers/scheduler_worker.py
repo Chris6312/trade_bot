@@ -14,6 +14,7 @@ from backend.app.db.session import get_session_factory
 from backend.app.services.operator_service import create_system_event
 from backend.app.services.universe_service import list_universe_symbols, trading_date_for_now
 from backend.app.workers.candle_worker import SingleCandleWorker
+from backend.app.workers.ci_crypto_regime_worker import CiCryptoRegimeWorker
 from backend.app.workers.feature_worker import FeatureWorker
 from backend.app.workers.regime_worker import RegimeWorker
 from backend.app.workers.strategy_worker import StrategyWorker
@@ -157,12 +158,6 @@ class SchedulerWorker:
         self._ensure_universe_ready(cycle_time)
         self._run_daily_stock_universe_if_due(cycle_time)
         self._run_incremental_pipelines_if_due(cycle_time)
-
-
-    def _timeframe_runs_strategy(self, *, asset_class: str, timeframe: str) -> bool:
-        if asset_class == "stock":
-            return timeframe in set(self.settings.stock_strategy_timeframe_list)
-        return timeframe in set(self.settings.crypto_strategy_timeframe_list)
 
     def _ensure_universe_ready(self, now: datetime) -> None:
         with self.session_factory() as db:
@@ -376,23 +371,6 @@ class SchedulerWorker:
                     )
                     continue
 
-                if not self._timeframe_runs_strategy(asset_class="stock", timeframe=timeframe):
-                    summaries.append(
-                        ScheduledPipelineSummary(
-                            asset_class="stock",
-                            timeframe=timeframe,
-                            close_at=close_at,
-                            candle=candle_stage,
-                            feature=feature_stage,
-                            regime=regime_stage,
-                            strategy=ScheduledStageSummary(
-                                status="skipped",
-                                skipped_reason="filter_only_timeframe",
-                            ),
-                        )
-                    )
-                    continue
-
                 strategy_summary = strategy_worker.build_stock_candidates(timeframe=timeframe, now=now)
                 strategy_reason = getattr(strategy_summary, "skipped_reason", None)
                 strategy_stage = ScheduledStageSummary(
@@ -552,19 +530,8 @@ class SchedulerWorker:
                     skipped_reason=regime_reason,
                 )
 
-            if not self._timeframe_runs_strategy(asset_class=asset_class, timeframe=timeframe):
-                return ScheduledPipelineSummary(
-                    asset_class=asset_class,
-                    timeframe=timeframe,
-                    close_at=close_at,
-                    candle=candle_stage,
-                    feature=feature_stage,
-                    regime=regime_stage,
-                    strategy=ScheduledStageSummary(
-                        status="skipped",
-                        skipped_reason="filter_only_timeframe",
-                    ),
-                )
+            if asset_class == "crypto":
+                self._run_ci_crypto_regime_advisory(db=db, timeframe=timeframe, now=now)
 
             if asset_class == "stock":
                 strategy_summary = strategy_worker.build_stock_candidates(timeframe=timeframe, now=now)
@@ -682,6 +649,21 @@ class SchedulerWorker:
                 severity="error",
                 message="Background scheduler cycle failed.",
                 payload={"error": f"{type(exc).__name__}: {exc}"},
+                commit=True,
+            )
+
+    def _run_ci_crypto_regime_advisory(self, *, db: Session, timeframe: str, now: datetime) -> None:
+        try:
+            worker = CiCryptoRegimeWorker(db, settings=self.settings)
+            worker.run_if_due(timeframe=timeframe, now=now)
+        except Exception as exc:  # pragma: no cover
+            logger.exception("scheduler_ci_crypto_regime_failed")
+            self._emit_event(
+                db,
+                event_type="scheduler.ci_crypto_regime_non_blocking_failure",
+                severity="warning",
+                message="CI crypto regime advisory worker failed, but the main pipeline continued.",
+                payload={"timeframe": timeframe, "error": f"{type(exc).__name__}: {exc}"},
                 commit=True,
             )
 

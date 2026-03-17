@@ -330,77 +330,6 @@ class StrategySyncState(TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
 
 
-class CiCryptoRegimeModelRegistry(TimestampMixin, Base):
-    __tablename__ = "ci_crypto_regime_model_registry"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    model_version: Mapped[str] = mapped_column(String(120), unique=True, index=True, nullable=False)
-    feature_set_version: Mapped[str] = mapped_column(String(120), nullable=False)
-    scaler_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    model_type: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
-    label_map_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-    training_window_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    training_window_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    training_notes: Mapped[str | None] = mapped_column(Text(), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
-    created_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
-
-
-class CiCryptoRegimeRun(TimestampMixin, Base):
-    __tablename__ = "ci_crypto_regime_runs"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    run_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
-    run_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    status: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
-    skip_reason: Mapped[str | None] = mapped_column(String(60), nullable=True)
-    model_version: Mapped[str | None] = mapped_column(String(120), index=True, nullable=True)
-    feature_set_version: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    used_orderbook: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    used_defillama: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    used_hurst: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    data_window_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
-    degraded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-
-
-class CiCryptoRegimeFeatureSnapshot(TimestampMixin, Base):
-    __tablename__ = "ci_crypto_regime_feature_snapshots"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    run_id: Mapped[int] = mapped_column(ForeignKey("ci_crypto_regime_runs.id", ondelete="CASCADE"), index=True)
-    symbol_scope: Mapped[str] = mapped_column(String(40), index=True, nullable=False)
-    timeframe: Mapped[str | None] = mapped_column(String(10), index=True, nullable=True)
-    feature_name: Mapped[str] = mapped_column(String(120), index=True, nullable=False)
-    feature_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
-    feature_status: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
-    source: Mapped[str] = mapped_column(String(30), nullable=False)
-    as_of_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
-
-
-class CiCryptoRegimeState(TimestampMixin, Base):
-    __tablename__ = "ci_crypto_regime_states"
-    __table_args__ = (
-        UniqueConstraint("run_id", name="uq_ci_crypto_regime_states_run_id"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    run_id: Mapped[int] = mapped_column(ForeignKey("ci_crypto_regime_runs.id", ondelete="CASCADE"), index=True)
-    as_of_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
-    state: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
-    confidence: Mapped[Decimal] = mapped_column(Numeric(10, 5), default=0, nullable=False)
-    cluster_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    cluster_prob_bull: Mapped[Decimal | None] = mapped_column(Numeric(10, 5), nullable=True)
-    cluster_prob_neutral: Mapped[Decimal | None] = mapped_column(Numeric(10, 5), nullable=True)
-    cluster_prob_risk_off: Mapped[Decimal | None] = mapped_column(Numeric(10, 5), nullable=True)
-    agreement_with_core: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
-    advisory_action: Mapped[str] = mapped_column(String(20), nullable=False)
-    core_regime_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    degraded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    reason_codes_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-    summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
-
-
 class RiskSnapshot(TimestampMixin, Base):
     __tablename__ = "risk_snapshots"
     __table_args__ = (
@@ -843,3 +772,86 @@ class CandleFreshness(TimestampMixin, Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_candle_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     fresh_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CiCryptoRegimeModelRegistry(TimestampMixin, Base):
+    __tablename__ = "ci_crypto_regime_model_registry"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    model_version: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    feature_set_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    scaler_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    model_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    label_map_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    training_window_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    training_window_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    training_notes: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class CiCryptoRegimeRun(TimestampMixin, Base):
+    __tablename__ = "ci_crypto_regime_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    run_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    skip_reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    model_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    feature_set_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    used_orderbook: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    used_defillama: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    used_hurst: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    data_window_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    degraded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    feature_snapshots: Mapped[list["CiCryptoRegimeFeatureSnapshot"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="CiCryptoRegimeFeatureSnapshot.id",
+    )
+    state: Mapped["CiCryptoRegimeState"] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+
+class CiCryptoRegimeFeatureSnapshot(TimestampMixin, Base):
+    __tablename__ = "ci_crypto_regime_feature_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("ci_crypto_regime_runs.id", ondelete="CASCADE"), index=True)
+    symbol_scope: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    timeframe: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
+    feature_name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    feature_value: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    feature_status: Mapped[str] = mapped_column(String(20), nullable=False, default="ok")
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    as_of_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+    run: Mapped[CiCryptoRegimeRun] = relationship(back_populates="feature_snapshots")
+
+
+class CiCryptoRegimeState(TimestampMixin, Base):
+    __tablename__ = "ci_crypto_regime_states"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("ci_crypto_regime_runs.id", ondelete="CASCADE"), unique=True, index=True)
+    as_of_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    confidence: Mapped[Decimal] = mapped_column(Numeric(6, 5), nullable=False)
+    cluster_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cluster_prob_bull: Mapped[Decimal | None] = mapped_column(Numeric(6, 5), nullable=True)
+    cluster_prob_neutral: Mapped[Decimal | None] = mapped_column(Numeric(6, 5), nullable=True)
+    cluster_prob_risk_off: Mapped[Decimal | None] = mapped_column(Numeric(6, 5), nullable=True)
+    agreement_with_core: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    advisory_action: Mapped[str] = mapped_column(String(20), nullable=False)
+    core_regime_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    degraded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    reason_codes_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    run: Mapped[CiCryptoRegimeRun] = relationship(back_populates="state")
