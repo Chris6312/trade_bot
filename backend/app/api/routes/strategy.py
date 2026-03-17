@@ -8,6 +8,7 @@ from backend.app.services.strategy_service import (
     get_strategy_sync_state,
     list_current_strategy_snapshots,
 )
+from backend.app.services.universe_service import list_latest_universe_symbols
 
 router = APIRouter(prefix="/strategy", tags=["strategy"])
 
@@ -19,7 +20,8 @@ def get_current_strategy_rows(
     db: Session = Depends(get_db),
 ) -> list[StrategySnapshotRead]:
     _validate_asset_class(asset_class)
-    rows = list_current_strategy_snapshots(db, asset_class=asset_class, timeframe=timeframe)
+    symbols = [row.symbol for row in list_latest_universe_symbols(db, asset_class=asset_class)]
+    rows = list_current_strategy_snapshots(db, asset_class=asset_class, timeframe=timeframe, symbols=symbols)
     if not rows:
         return []
     return [StrategySnapshotRead.model_validate(row) for row in rows]

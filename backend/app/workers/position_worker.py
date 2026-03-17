@@ -114,9 +114,9 @@ class PositionWorker:
 
     def _default_timeframe(self, *, asset_class: str) -> str:
         if asset_class == "stock":
-            timeframes = self.settings.stock_feature_timeframe_list
+            timeframes = self.settings.stock_strategy_timeframe_list
         else:
-            timeframes = self.settings.crypto_feature_timeframe_list
+            timeframes = self.settings.crypto_strategy_timeframe_list
         return timeframes[0] if timeframes else "1h"
 
     @staticmethod

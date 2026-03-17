@@ -67,6 +67,36 @@ def get_universe_run(db: Session, *, asset_class: str, trade_date: date) -> Univ
     )
 
 
+def get_latest_resolved_universe_run(db: Session, *, asset_class: str) -> UniverseRun | None:
+    return (
+        db.query(UniverseRun)
+        .filter(
+            UniverseRun.asset_class == asset_class,
+            UniverseRun.status == "resolved",
+        )
+        .order_by(UniverseRun.trade_date.desc(), UniverseRun.resolved_at.desc(), UniverseRun.id.desc())
+        .first()
+    )
+
+
+def list_latest_universe_symbols(db: Session, *, asset_class: str) -> list[UniverseSymbolRecord]:
+    run = get_latest_resolved_universe_run(db, asset_class=asset_class)
+    if run is None:
+        return []
+    return [
+        UniverseSymbolRecord(
+            symbol=item.symbol,
+            rank=item.rank,
+            source=item.source,
+            venue=item.venue,
+            asset_class=item.asset_class,
+            selection_reason=item.selection_reason,
+            payload=item.payload or {},
+        )
+        for item in run.constituents
+    ]
+
+
 def list_universe_symbols(db: Session, *, asset_class: str, trade_date: date) -> list[UniverseSymbolRecord]:
     run = get_universe_run(db, asset_class=asset_class, trade_date=trade_date)
     if run is None or run.status != "resolved":

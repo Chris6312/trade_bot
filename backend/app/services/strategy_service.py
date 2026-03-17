@@ -99,8 +99,9 @@ def list_current_strategy_snapshots(
     *,
     asset_class: str,
     timeframe: str,
+    symbols: Iterable[str] | None = None,
 ) -> list[StrategySnapshot]:
-    rows = (
+    query = (
         db.query(StrategySnapshot)
         .filter(
             StrategySnapshot.asset_class == asset_class,
@@ -111,8 +112,15 @@ def list_current_strategy_snapshots(
             StrategySnapshot.computed_at.desc(),
             StrategySnapshot.id.desc(),
         )
-        .all()
     )
+
+    requested_symbols = tuple(dict.fromkeys(str(symbol) for symbol in (symbols or ()) if str(symbol)))
+    if symbols is not None and not requested_symbols:
+        return []
+    if requested_symbols:
+        query = query.filter(StrategySnapshot.symbol.in_(requested_symbols))
+
+    rows = query.all()
     current: dict[tuple[str, str], StrategySnapshot] = {}
     for row in rows:
         key = (row.symbol, row.strategy_name)

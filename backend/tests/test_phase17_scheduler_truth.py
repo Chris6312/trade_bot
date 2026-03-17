@@ -339,6 +339,8 @@ def test_scheduler_daily_stock_universe_refresh_backfills_and_runs_strategy(clie
         database_url="sqlite:///unused.db",
         stock_feature_timeframes="1h,15m,5m,1d",
         crypto_feature_timeframes="",
+        stock_strategy_timeframes="1h,15m,5m",
+        crypto_strategy_timeframes="",
         ai_premarket_time_et="08:40",
     )
     worker = SchedulerWorker(session_factory=get_session_factory(), settings=settings)
@@ -346,7 +348,7 @@ def test_scheduler_daily_stock_universe_refresh_backfills_and_runs_strategy(clie
     worker._run_daily_stock_universe_if_due(now)
 
     assert seen_backfill_timeframes == ["1h", "15m", "5m", "1d"]
-    assert seen_strategy_timeframes == ["1h", "15m", "5m", "1d"]
+    assert seen_strategy_timeframes == ["1h", "15m", "5m"]
 
     with get_session_factory()() as db:
         refresh_event = (
@@ -369,5 +371,18 @@ def test_scheduler_daily_stock_universe_refresh_backfills_and_runs_strategy(clie
         assert pipeline_event.payload["pipeline_status"] == "executed"
         assert [item["timeframe"] for item in pipeline_event.payload["timeframes"]] == ["1h", "15m", "5m", "1d"]
         assert all(item["candle"]["upserted_bars"] == 45 for item in pipeline_event.payload["timeframes"])
-        assert all(item["strategy"]["evaluated_rows"] == 8 for item in pipeline_event.payload["timeframes"])
-        assert all(item["strategy"]["ready_rows"] == 5 for item in pipeline_event.payload["timeframes"])
+
+        executed_strategy_rows = [
+            item for item in pipeline_event.payload["timeframes"]
+            if item["strategy"]["status"] == "executed"
+        ]
+        skipped_strategy_rows = [
+            item for item in pipeline_event.payload["timeframes"]
+            if item["strategy"]["status"] == "skipped"
+        ]
+
+        assert [item["timeframe"] for item in executed_strategy_rows] == ["1h", "15m", "5m"]
+        assert [item["timeframe"] for item in skipped_strategy_rows] == ["1d"]
+        assert all(item["strategy"]["evaluated_rows"] == 8 for item in executed_strategy_rows)
+        assert all(item["strategy"]["ready_rows"] == 5 for item in executed_strategy_rows)
+        assert skipped_strategy_rows[0]["strategy"]["skipped_reason"] == "filter_only_timeframe"

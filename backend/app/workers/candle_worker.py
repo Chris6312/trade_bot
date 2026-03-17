@@ -53,8 +53,7 @@ class SingleCandleWorker:
         timeframe: str,
         now: datetime,
     ) -> list[object]:
-        interval = timeframe_to_timedelta(timeframe)
-        current = self._coerce_datetime(now)
+        upper_bound = self._coerce_datetime(now)
         closed_bars: list[object] = []
 
         for bar in bars:
@@ -73,7 +72,7 @@ class SingleCandleWorker:
                 else:
                     bar_time = self._coerce_datetime(timestamp)
 
-                if self._coerce_datetime(bar_time) + interval <= current:
+                if self._coerce_datetime(bar_time) <= upper_bound:
                     closed_bars.append(bar)
             except Exception:
                 closed_bars.append(bar)
@@ -410,7 +409,7 @@ class SingleCandleWorker:
             symbol_bars = self._filter_closed_bars(
                 symbol_bars,
                 timeframe,
-                sync_time,
+                end_at,
             )
             if symbol_bars:
                 total += persist_ohlcv_batch(

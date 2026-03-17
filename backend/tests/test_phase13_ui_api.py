@@ -144,7 +144,20 @@ def test_phase13_controls_expand_to_configured_timeframes_when_unspecified(clien
     seen_candle_timeframes: list[str] = []
     seen_strategy_timeframes: list[str] = []
 
-    monkeypatch.setattr(controls_route, "get_settings", lambda: SimpleNamespace(stock_feature_timeframe_list=["1h", "15m", "5m", "1d"], crypto_feature_timeframe_list=["4h", "1h", "15m", "1d"], execution_kill_switch_enabled=False, default_mode="mixed", stock_execution_mode="paper", crypto_execution_mode="paper"))
+    monkeypatch.setattr(
+        controls_route,
+        "get_settings",
+        lambda: SimpleNamespace(
+            stock_feature_timeframe_list=["1h", "15m", "5m", "1d"],
+            crypto_feature_timeframe_list=["4h", "1h", "15m", "1d"],
+            stock_strategy_timeframe_list=["1h", "15m", "5m"],
+            crypto_strategy_timeframe_list=["4h", "1h", "15m"],
+            execution_kill_switch_enabled=False,
+            default_mode="mixed",
+            stock_execution_mode="paper",
+            crypto_execution_mode="paper",
+        ),
+    )
     monkeypatch.setattr(controls_route.SingleCandleWorker, "sync_stock_backfill", lambda self, symbols, timeframe: seen_candle_timeframes.append(timeframe) or SimpleNamespace(requested_symbols=tuple(symbols), upserted_bars=5, skipped_reason=None))
     monkeypatch.setattr(controls_route.FeatureWorker, "build_stock_features", lambda self, timeframe=None: seen_strategy_timeframes.append(timeframe) or SimpleNamespace(computed_snapshots=8))
     monkeypatch.setattr(controls_route.RegimeWorker, "build_stock_regime", lambda self, timeframe=None: SimpleNamespace(regime="bull", entry_policy="full", symbol_count=8))
@@ -157,5 +170,5 @@ def test_phase13_controls_expand_to_configured_timeframes_when_unspecified(clien
 
     strategy_response = client.post("/api/v1/controls/strategy/run-once", json={"asset_class": "stock"})
     assert strategy_response.status_code == 200
-    assert seen_strategy_timeframes == ["1h", "15m", "5m", "1d"]
-    assert [item["timeframe"] for item in strategy_response.json()["details"]] == ["1h", "15m", "5m", "1d"]
+    assert seen_strategy_timeframes == ["1h", "15m", "5m"]
+    assert [item["timeframe"] for item in strategy_response.json()["details"]] == ["1h", "15m", "5m"]

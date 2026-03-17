@@ -33,6 +33,111 @@ class SettingRead(BaseModel):
     updated_at: datetime
 
 
+class CiCryptoRegimeModelRegistryRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    model_version: str
+    feature_set_version: str
+    scaler_version: str | None
+    model_type: str
+    label_map_json: dict[str, Any] | None
+    training_window_start_at: datetime | None
+    training_window_end_at: datetime | None
+    training_notes: str | None
+    is_active: bool
+    created_by: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CiCryptoRegimeRunRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    run_started_at: datetime
+    run_completed_at: datetime | None
+    status: str
+    skip_reason: str | None
+    model_version: str | None
+    feature_set_version: str | None
+    used_orderbook: bool
+    used_defillama: bool
+    used_hurst: bool
+    data_window_end_at: datetime | None
+    error_message: str | None
+    degraded: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class CiCryptoRegimeFeatureSnapshotRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    run_id: int
+    symbol_scope: str
+    timeframe: str | None
+    feature_name: str
+    feature_value: Decimal | None
+    feature_status: str
+    source: str
+    as_of_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class CiCryptoRegimeStateRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    run_id: int
+    as_of_at: datetime
+    state: str
+    confidence: Decimal
+    cluster_id: int | None
+    cluster_prob_bull: Decimal | None
+    cluster_prob_neutral: Decimal | None
+    cluster_prob_risk_off: Decimal | None
+    agreement_with_core: str
+    advisory_action: str
+    core_regime_state: str | None
+    degraded: bool
+    reason_codes_json: list[str] | None
+    summary_json: dict[str, Any] | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CiCryptoRegimeCurrentRead(BaseModel):
+    enabled: bool
+    advisory_only: bool
+    as_of_at: datetime | None
+    state: str
+    confidence: Decimal
+    core_regime_state: str | None
+    agreement_with_core: str | None
+    advisory_action: str | None
+    model_version: str | None
+    feature_set_version: str | None
+    degraded: bool
+    reason_codes: list[str] = Field(default_factory=list)
+    summary: dict[str, Any] | None = None
+    core_regime_timeframe: str | None = None
+    last_run_status: str | None = None
+
+
+class CiCryptoRegimeModelsResponse(BaseModel):
+    active_model: CiCryptoRegimeModelRegistryRead | None = None
+    models: list[CiCryptoRegimeModelRegistryRead] = Field(default_factory=list)
+
+
+class CiCryptoRegimeRunDetailRead(BaseModel):
+    run: CiCryptoRegimeRunRead
+    state: CiCryptoRegimeStateRead | None = None
+    features: list[CiCryptoRegimeFeatureSnapshotRead] = Field(default_factory=list)
+
+
 class RuntimeSettingsSnapshot(BaseModel):
     app_name: str
     app_env: str

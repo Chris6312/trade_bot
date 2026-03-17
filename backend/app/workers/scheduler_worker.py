@@ -158,6 +158,12 @@ class SchedulerWorker:
         self._run_daily_stock_universe_if_due(cycle_time)
         self._run_incremental_pipelines_if_due(cycle_time)
 
+
+    def _timeframe_runs_strategy(self, *, asset_class: str, timeframe: str) -> bool:
+        if asset_class == "stock":
+            return timeframe in set(self.settings.stock_strategy_timeframe_list)
+        return timeframe in set(self.settings.crypto_strategy_timeframe_list)
+
     def _ensure_universe_ready(self, now: datetime) -> None:
         with self.session_factory() as db:
             worker = UniverseWorker(db, settings=self.settings)
@@ -370,6 +376,23 @@ class SchedulerWorker:
                     )
                     continue
 
+                if not self._timeframe_runs_strategy(asset_class="stock", timeframe=timeframe):
+                    summaries.append(
+                        ScheduledPipelineSummary(
+                            asset_class="stock",
+                            timeframe=timeframe,
+                            close_at=close_at,
+                            candle=candle_stage,
+                            feature=feature_stage,
+                            regime=regime_stage,
+                            strategy=ScheduledStageSummary(
+                                status="skipped",
+                                skipped_reason="filter_only_timeframe",
+                            ),
+                        )
+                    )
+                    continue
+
                 strategy_summary = strategy_worker.build_stock_candidates(timeframe=timeframe, now=now)
                 strategy_reason = getattr(strategy_summary, "skipped_reason", None)
                 strategy_stage = ScheduledStageSummary(
@@ -527,6 +550,20 @@ class SchedulerWorker:
                     regime=regime_stage,
                     strategy=ScheduledStageSummary(status="skipped", skipped_reason=regime_reason),
                     skipped_reason=regime_reason,
+                )
+
+            if not self._timeframe_runs_strategy(asset_class=asset_class, timeframe=timeframe):
+                return ScheduledPipelineSummary(
+                    asset_class=asset_class,
+                    timeframe=timeframe,
+                    close_at=close_at,
+                    candle=candle_stage,
+                    feature=feature_stage,
+                    regime=regime_stage,
+                    strategy=ScheduledStageSummary(
+                        status="skipped",
+                        skipped_reason="filter_only_timeframe",
+                    ),
                 )
 
             if asset_class == "stock":

@@ -158,3 +158,88 @@ def test_phase17_universe_route_marks_symbol_blocked_when_all_strategies_blocked
     payload = response.json()[0]["payload"]
     assert payload["eligibility"] == "Blocked"
     assert "regime_blocked" in payload["block_reason"]
+
+
+def test_phase17_strategy_route_filters_to_current_universe_symbols(client) -> None:
+    with get_session_factory()() as db:
+        now = datetime.now(UTC).replace(second=0, microsecond=0)
+        trade_date = trading_date_for_now(now)
+        run = UniverseRun(
+            asset_class="stock",
+            venue="alpaca",
+            trade_date=trade_date,
+            source="ai",
+            status="resolved",
+            resolved_at=now,
+            payload={"resolution": "ai"},
+        )
+        db.add(run)
+        db.flush()
+        db.add(
+            UniverseConstituent(
+                universe_run_id=run.id,
+                asset_class="stock",
+                venue="alpaca",
+                symbol="AAPL",
+                rank=1,
+                source="ai",
+                selection_reason="selected",
+                payload={},
+            )
+        )
+        db.add_all([
+            StrategySnapshot(
+                asset_class="stock",
+                venue="alpaca",
+                source="strategy_engine",
+                symbol="AAPL",
+                strategy_name="trend_pullback_long",
+                direction="long",
+                timeframe="15m",
+                candidate_timestamp=now - timedelta(minutes=15),
+                computed_at=now - timedelta(minutes=15),
+                regime="neutral",
+                entry_policy="moderate",
+                status="blocked",
+                readiness_score=Decimal("0.61"),
+                composite_score=Decimal("0.64"),
+                threshold_score=Decimal("0.60"),
+                trend_score=Decimal("0.66"),
+                participation_score=Decimal("0.58"),
+                liquidity_score=Decimal("0.73"),
+                stability_score=Decimal("0.62"),
+                blocked_reasons=["momentum_too_weak"],
+                decision_reason="momentum_too_weak",
+                payload={},
+            ),
+            StrategySnapshot(
+                asset_class="stock",
+                venue="alpaca",
+                source="strategy_engine",
+                symbol="MSFT",
+                strategy_name="trend_pullback_long",
+                direction="long",
+                timeframe="15m",
+                candidate_timestamp=now - timedelta(minutes=15),
+                computed_at=now - timedelta(minutes=15),
+                regime="neutral",
+                entry_policy="moderate",
+                status="ready",
+                readiness_score=Decimal("0.81"),
+                composite_score=Decimal("0.79"),
+                threshold_score=Decimal("0.78"),
+                trend_score=Decimal("0.84"),
+                participation_score=Decimal("0.76"),
+                liquidity_score=Decimal("0.82"),
+                stability_score=Decimal("0.80"),
+                blocked_reasons=[],
+                decision_reason=None,
+                payload={},
+            ),
+        ])
+        db.commit()
+
+    response = client.get("/api/v1/strategy/stock/current?timeframe=15m")
+    assert response.status_code == 200
+    payload = response.json()
+    assert [row["symbol"] for row in payload] == ["AAPL"]

@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.routes.account_snapshots import router as account_snapshot_router
+from backend.app.api.routes.ci_crypto_regime import router as ci_crypto_regime_router
 from backend.app.api.routes.controls import router as controls_router
 from backend.app.api.routes.data import router as data_router
 from backend.app.api.routes.execution import router as execution_router
@@ -59,6 +60,7 @@ app.include_router(data_router, prefix=settings.api_v1_prefix)
 app.include_router(universe_router, prefix=settings.api_v1_prefix)
 app.include_router(workflow_router, prefix=settings.api_v1_prefix)
 app.include_router(account_snapshot_router, prefix=settings.api_v1_prefix)
+app.include_router(ci_crypto_regime_router, prefix=settings.api_v1_prefix)
 app.include_router(system_event_router, prefix=settings.api_v1_prefix)
 app.include_router(regime_router, prefix=settings.api_v1_prefix)
 app.include_router(strategy_router, prefix=settings.api_v1_prefix)

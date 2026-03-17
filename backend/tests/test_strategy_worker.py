@@ -166,6 +166,21 @@ def test_strategy_api_exposes_score_and_readiness_output(client) -> None:
 
 
 
+def test_strategy_api_uses_latest_resolved_universe_when_trade_date_is_not_today(client) -> None:
+    session = get_session_factory()()
+    try:
+        _seed_universe(session, asset_class="stock", venue="alpaca", symbols=("AAPL",))
+        _seed_stock_ready_symbol(session, symbol="AAPL")
+        _seed_regime(session, asset_class="stock", venue="alpaca", timeframe="1h", regime="bull", entry_policy="full")
+        StrategyWorker(session).build_stock_candidates(timeframe="1h", now=datetime(2026, 3, 14, 15, 0, tzinfo=UTC))
+    finally:
+        session.close()
+
+    response = client.get("/api/v1/strategy/stock/current", params={"timeframe": "1h"})
+    assert response.status_code == 200
+    assert len(response.json()) == 3
+
+
 def test_strategy_api_returns_empty_list_when_no_current_rows(client) -> None:
     response = client.get("/api/v1/strategy/stock/current", params={"timeframe": "1h"})
     assert response.status_code == 200

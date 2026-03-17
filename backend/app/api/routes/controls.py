@@ -124,12 +124,22 @@ def recompute_regime(payload: ControlActionRequest, db: Session = Depends(get_db
     worker = RegimeWorker(db, settings=settings)
     details: list[dict[str, object]] = []
     if payload.asset_class in {"all", "stock"}:
-        for timeframe in _resolve_requested_timeframes(settings, asset_class="stock", requested_timeframe=payload.timeframe):
+        for timeframe in _resolve_requested_timeframes(
+            settings,
+            asset_class="stock",
+            requested_timeframe=payload.timeframe,
+            pipeline="feature",
+        ):
             feature_summary = feature_worker.build_stock_features(timeframe=timeframe)
             summary = worker.build_stock_regime(timeframe=timeframe)
             details.append({"asset_class": "stock", "timeframe": timeframe, "computed_features": feature_summary.computed_snapshots, "regime": summary.regime, "entry_policy": summary.entry_policy, "symbol_count": summary.symbol_count})
     if payload.asset_class in {"all", "crypto"}:
-        for timeframe in _resolve_requested_timeframes(settings, asset_class="crypto", requested_timeframe=payload.timeframe):
+        for timeframe in _resolve_requested_timeframes(
+            settings,
+            asset_class="crypto",
+            requested_timeframe=payload.timeframe,
+            pipeline="feature",
+        ):
             feature_summary = feature_worker.build_crypto_features(timeframe=timeframe)
             summary = worker.build_crypto_regime(timeframe=timeframe)
             details.append({"asset_class": "crypto", "timeframe": timeframe, "computed_features": feature_summary.computed_snapshots, "regime": summary.regime, "entry_policy": summary.entry_policy, "symbol_count": summary.symbol_count})
@@ -145,13 +155,23 @@ def refresh_strategies(payload: ControlActionRequest, db: Session = Depends(get_
     strategy_worker = StrategyWorker(db, settings=settings)
     details: list[dict[str, object]] = []
     if payload.asset_class in {"all", "stock"}:
-        for timeframe in _resolve_requested_timeframes(settings, asset_class="stock", requested_timeframe=payload.timeframe):
+        for timeframe in _resolve_requested_timeframes(
+            settings,
+            asset_class="stock",
+            requested_timeframe=payload.timeframe,
+            pipeline="strategy",
+        ):
             feature_summary = feature_worker.build_stock_features(timeframe=timeframe)
             regime_summary = regime_worker.build_stock_regime(timeframe=timeframe)
             strategy_summary = strategy_worker.build_stock_candidates(timeframe=timeframe)
             details.append({"asset_class": "stock", "timeframe": timeframe, "computed_features": feature_summary.computed_snapshots, "regime": regime_summary.regime, "entry_policy": regime_summary.entry_policy, "evaluated_rows": strategy_summary.evaluated_rows, "ready_rows": strategy_summary.ready_rows, "blocked_rows": strategy_summary.blocked_rows})
     if payload.asset_class in {"all", "crypto"}:
-        for timeframe in _resolve_requested_timeframes(settings, asset_class="crypto", requested_timeframe=payload.timeframe):
+        for timeframe in _resolve_requested_timeframes(
+            settings,
+            asset_class="crypto",
+            requested_timeframe=payload.timeframe,
+            pipeline="strategy",
+        ):
             feature_summary = feature_worker.build_crypto_features(timeframe=timeframe)
             regime_summary = regime_worker.build_crypto_regime(timeframe=timeframe)
             strategy_summary = strategy_worker.build_crypto_candidates(timeframe=timeframe)
@@ -180,11 +200,21 @@ def _run_candle_action(*, worker: SingleCandleWorker, db: Session, payload: Cont
     requests: list[tuple[str, str, list[str]]] = []
     if payload.asset_class in {"all", "stock"}:
         stock_symbols = payload.symbols or [row.symbol for row in list_universe_symbols(db, asset_class="stock", trade_date=trade_date)]
-        for timeframe in _resolve_requested_timeframes(settings, asset_class="stock", requested_timeframe=payload.timeframe):
+        for timeframe in _resolve_requested_timeframes(
+            settings,
+            asset_class="stock",
+            requested_timeframe=payload.timeframe,
+            pipeline="feature",
+        ):
             requests.append(("stock", timeframe, stock_symbols))
     if payload.asset_class in {"all", "crypto"}:
         crypto_symbols = payload.symbols or [row.symbol for row in list_universe_symbols(db, asset_class="crypto", trade_date=trade_date)]
-        for timeframe in _resolve_requested_timeframes(settings, asset_class="crypto", requested_timeframe=payload.timeframe):
+        for timeframe in _resolve_requested_timeframes(
+            settings,
+            asset_class="crypto",
+            requested_timeframe=payload.timeframe,
+            pipeline="feature",
+        ):
             requests.append(("crypto", timeframe, crypto_symbols))
 
     for asset_class, timeframe, symbols in requests:
@@ -196,10 +226,29 @@ def _run_candle_action(*, worker: SingleCandleWorker, db: Session, payload: Cont
     return details
 
 
-def _resolve_requested_timeframes(settings, *, asset_class: str, requested_timeframe: str | None) -> list[str]:
+def _resolve_requested_timeframes(
+    settings,
+    *,
+    asset_class: str,
+    requested_timeframe: str | None,
+    pipeline: str = "feature",
+) -> list[str]:
     if requested_timeframe:
         return [requested_timeframe]
-    configured = settings.stock_feature_timeframe_list if asset_class == "stock" else settings.crypto_feature_timeframe_list
+
+    if pipeline == "strategy":
+        configured = (
+            settings.stock_strategy_timeframe_list
+            if asset_class == "stock"
+            else settings.crypto_strategy_timeframe_list
+        )
+    else:
+        configured = (
+            settings.stock_feature_timeframe_list
+            if asset_class == "stock"
+            else settings.crypto_feature_timeframe_list
+        )
+
     return list(configured or ["1h"])
 
 

@@ -57,8 +57,15 @@ class Settings(BaseSettings):
 
     stock_default_backfill_bars: int = 500
     crypto_default_backfill_bars: int = 720
+
+    # Feature / regime timeframes keep the daily filter.
     stock_feature_timeframes: str = "1h,15m,5m,1d"
     crypto_feature_timeframes: str = "4h,1h,15m,1d"
+
+    # Strategy / risk / execution / position timeframes only include trade cadences.
+    stock_strategy_timeframes: str = "1h,15m,5m"
+    crypto_strategy_timeframes: str = "4h,1h,15m"
+
     feature_lookback_bars: int = 20
 
     max_account_deployment_pct: float = 0.90
@@ -144,13 +151,25 @@ class Settings(BaseSettings):
 
         return self.database_url
 
+    @staticmethod
+    def _parse_timeframes(value: str) -> list[str]:
+        return [item.strip() for item in value.split(",") if item.strip()]
+
     @property
     def stock_feature_timeframe_list(self) -> list[str]:
-        return [item.strip() for item in self.stock_feature_timeframes.split(",") if item.strip()]
+        return self._parse_timeframes(self.stock_feature_timeframes)
 
     @property
     def crypto_feature_timeframe_list(self) -> list[str]:
-        return [item.strip() for item in self.crypto_feature_timeframes.split(",") if item.strip()]
+        return self._parse_timeframes(self.crypto_feature_timeframes)
+
+    @property
+    def stock_strategy_timeframe_list(self) -> list[str]:
+        return self._parse_timeframes(self.stock_strategy_timeframes)
+
+    @property
+    def crypto_strategy_timeframe_list(self) -> list[str]:
+        return self._parse_timeframes(self.crypto_strategy_timeframes)
 
 
 @lru_cache(maxsize=1)
