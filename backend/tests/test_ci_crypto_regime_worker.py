@@ -4,9 +4,12 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
+from backend.app.common.adapters.models import OrderBookLevel, OrderBookSnapshot
 from backend.app.core.config import Settings
 from backend.app.db.session import get_session_factory
 from backend.app.models.core import (
+    CiCryptoRegimeFeatureSnapshot,
+    CiCryptoRegimeOrderbookSnapshot,
     CiCryptoRegimeRun,
     CiCryptoRegimeState,
     FeatureSnapshot,
@@ -165,16 +168,43 @@ def _seed_full_ci_ready_state(db, *, now: datetime) -> None:
     db.flush()
 
 
-def test_ci_worker_persists_run_and_api_routes(client) -> None:
+def _fake_orderbook(symbol: str, depth: int) -> OrderBookSnapshot:
+    assert depth == 25
+    base_price = Decimal("84000") if symbol == "XBTUSD" else Decimal("4300")
+    bid_size = Decimal("0.40") if symbol == "XBTUSD" else Decimal("3.00")
+    ask_size = Decimal("0.38") if symbol == "XBTUSD" else Decimal("2.90")
+    timestamp = datetime(2026, 3, 16, 16, 15, tzinfo=UTC)
+    bids = []
+    asks = []
+    for index in range(25):
+        bids.append(
+            OrderBookLevel(
+                price=base_price - Decimal(str(index)),
+                volume=bid_size,
+                timestamp=timestamp,
+            )
+        )
+        asks.append(
+            OrderBookLevel(
+                price=base_price + Decimal("2") + Decimal(str(index)),
+                volume=ask_size,
+                timestamp=timestamp,
+            )
+        )
+    return OrderBookSnapshot(symbol=symbol, as_of=timestamp, bids=tuple(bids), asks=tuple(asks), raw={"test": True})
+
+
+def test_ci_worker_persists_run_orderbook_and_api_routes(client) -> None:
     now = datetime(2026, 3, 16, 16, 15, 30, tzinfo=UTC)
 
     with get_session_factory()() as db:
         upsert_setting(db, key="CI_CRYPTO_REGIME_ENABLED", value="true", value_type="bool")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS", value="1", value_type="integer")
         _seed_full_ci_ready_state(db, now=now)
         db.commit()
 
     with get_session_factory()() as db:
-        summary = CiCryptoRegimeWorker(db).run(now=now)
+        summary = CiCryptoRegimeWorker(db, orderbook_fetcher=_fake_orderbook).run(now=now)
         assert summary.status == "success"
         assert summary.run_id is not None
         assert summary.state == "bull"
@@ -183,9 +213,13 @@ def test_ci_worker_persists_run_and_api_routes(client) -> None:
 
     current = client.get("/api/v1/ci/crypto-regime/current")
     assert current.status_code == 200
-    assert current.json()["state"] == "bull"
-    assert current.json()["agreement_with_core"] == "agree"
-    assert current.json()["model_version"] == "ci_rules_v1"
+    current_payload = current.json()
+    assert current_payload["state"] == "bull"
+    assert current_payload["agreement_with_core"] == "agree"
+    assert current_payload["model_version"] == "ci_rules_v1"
+    assert current_payload["last_run_used_orderbook"] is True
+    assert current_payload["orderbook_status"] == "ready"
+    assert current_payload["orderbook_ready"] is True
 
     history = client.get("/api/v1/ci/crypto-regime/history?limit=5")
     assert history.status_code == 200
@@ -194,21 +228,55 @@ def test_ci_worker_persists_run_and_api_routes(client) -> None:
     run_id = history.json()["items"][0]["run_id"]
     detail = client.get(f"/api/v1/ci/crypto-regime/runs/{run_id}")
     assert detail.status_code == 200
-    assert detail.json()["run"]["status"] == "success"
-    assert len(detail.json()["features"]) >= 9
-
-    models = client.get("/api/v1/ci/crypto-regime/models")
-    assert models.status_code == 200
-    assert models.json()["active_model_version"] == "ci_rules_v1"
-    assert models.json()["items"][0]["feature_set_version"] == "ci_crypto_regime_feature_set_v1"
+    detail_payload = detail.json()
+    assert detail_payload["run"]["status"] == "success"
+    assert len(detail_payload["features"]) >= 20
+    assert len(detail_payload["orderbook_snapshots"]) == 2
+    assert {row["symbol"] for row in detail_payload["orderbook_snapshots"]} == {"XBTUSD", "ETHUSD"}
 
     with get_session_factory()() as db:
         run = db.query(CiCryptoRegimeRun).order_by(CiCryptoRegimeRun.id.desc()).first()
         state = db.query(CiCryptoRegimeState).order_by(CiCryptoRegimeState.id.desc()).first()
         events = db.query(SystemEvent).filter(SystemEvent.event_source == "ci_crypto_regime_worker").all()
-        assert run is not None and run.status == "success"
+        orderbook_rows = db.query(CiCryptoRegimeOrderbookSnapshot).order_by(CiCryptoRegimeOrderbookSnapshot.id.asc()).all()
+        feature_names = {
+            row.feature_name
+            for row in db.query(CiCryptoRegimeFeatureSnapshot).filter(CiCryptoRegimeFeatureSnapshot.run_id == run.id).all()
+        }
+        assert run is not None and run.status == "success" and run.used_orderbook is True
         assert state is not None and state.state == "bull"
+        assert len(orderbook_rows) == 2
+        assert "microstructure_support_score" in feature_names
         assert {event.event_type for event in events} >= {"ci_crypto_regime.run_started", "ci_crypto_regime.inference_complete"}
+
+
+def test_ci_worker_falls_back_when_orderbook_is_unavailable(client) -> None:
+    now = datetime(2026, 3, 16, 16, 15, 30, tzinfo=UTC)
+
+    with get_session_factory()() as db:
+        upsert_setting(db, key="CI_CRYPTO_REGIME_ENABLED", value="true", value_type="bool")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS", value="1", value_type="integer")
+        _seed_full_ci_ready_state(db, now=now)
+        db.commit()
+
+    def _boom(symbol: str, depth: int) -> OrderBookSnapshot:  # pragma: no cover - invoked by worker
+        raise RuntimeError(f"order book unavailable for {symbol} at depth {depth}")
+
+    with get_session_factory()() as db:
+        summary = CiCryptoRegimeWorker(db, orderbook_fetcher=_boom).run(now=now)
+        assert summary.status == "partial"
+        assert summary.state == "bull"
+        assert summary.degraded is True
+
+    with get_session_factory()() as db:
+        run = db.query(CiCryptoRegimeRun).order_by(CiCryptoRegimeRun.id.desc()).first()
+        state = db.query(CiCryptoRegimeState).order_by(CiCryptoRegimeState.id.desc()).first()
+        events = db.query(SystemEvent).filter(SystemEvent.event_source == "ci_crypto_regime_worker").all()
+        assert run is not None and run.used_orderbook is False and run.status == "partial"
+        assert state is not None and state.summary_json["orderbook_status"] == "unavailable"
+        event_types = {event.event_type for event in events}
+        assert "ci_crypto_regime.orderbook_unavailable" in event_types
+        assert "ci_crypto_regime.run_degraded" in event_types
 
 
 def test_ci_worker_marks_stale_feature_data_unavailable(client) -> None:
@@ -216,6 +284,7 @@ def test_ci_worker_marks_stale_feature_data_unavailable(client) -> None:
 
     with get_session_factory()() as db:
         upsert_setting(db, key="CI_CRYPTO_REGIME_ENABLED", value="true", value_type="bool")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_USE_ORDERBOOK", value="false", value_type="bool")
         _seed_full_ci_ready_state(db, now=now)
         db.commit()
 

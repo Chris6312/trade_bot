@@ -39,3 +39,31 @@ def test_runtime_snapshot_reads_environment_and_db_safely(client) -> None:
     assert payload["setting_sources"]["backend_port"] == "database"
     assert payload["setting_sources"]["app_name"] == "environment"
     assert payload["database_url_masked"].endswith("phase2_test.db")
+
+
+def test_runtime_snapshot_includes_ci_crypto_regime_status(client) -> None:
+    client.put(
+        "/api/v1/settings/CI_CRYPTO_REGIME_ENABLED",
+        json={
+            "value": "true",
+            "value_type": "bool",
+            "description": "Enable CI advisory",
+            "is_secret": False,
+        },
+    )
+    client.put(
+        "/api/v1/settings/CI_CRYPTO_REGIME_MODEL_VERSION",
+        json={
+            "value": "ci_rules_v1",
+            "value_type": "string",
+            "description": "CI model version",
+            "is_secret": False,
+        },
+    )
+
+    snapshot_response = client.get("/api/v1/settings/runtime/snapshot")
+    assert snapshot_response.status_code == 200
+    payload = snapshot_response.json()
+    assert payload["ci_crypto_regime"]["enabled"] is True
+    assert payload["ci_crypto_regime"]["model_version"] == "ci_rules_v1"
+    assert payload["ci_crypto_regime"]["use_orderbook"] is True

@@ -7,6 +7,7 @@ from backend.app.db.session import get_session_factory
 from backend.app.models.core import (
     CiCryptoRegimeFeatureSnapshot,
     CiCryptoRegimeModelRegistry,
+    CiCryptoRegimeOrderbookSnapshot,
     CiCryptoRegimeRun,
     CiCryptoRegimeState,
     RegimeSnapshot,
@@ -82,7 +83,7 @@ def test_ci_crypto_regime_current_endpoint_uses_latest_state_and_settings(client
                 core_regime_state="bull",
                 degraded=False,
                 reason_codes_json=["btc_trend_mixed", "orderbook_bid_support_weak"],
-                summary_json={"notes": "advisory only"},
+                summary_json={"notes": "advisory only", "orderbook_status": "ready", "orderbook_ready": True},
             )
         )
         db.commit()
@@ -101,6 +102,9 @@ def test_ci_crypto_regime_current_endpoint_uses_latest_state_and_settings(client
     assert payload["reason_codes"] == ["btc_trend_mixed", "orderbook_bid_support_weak"]
     assert payload["core_regime_timeframe"] == "4h"
     assert payload["last_run_status"] == "success"
+    assert payload["last_run_used_orderbook"] is True
+    assert payload["orderbook_status"] == "ready"
+    assert payload["orderbook_ready"] is True
 
 
 def test_ci_crypto_regime_history_models_and_run_detail_endpoints(client) -> None:
@@ -135,7 +139,7 @@ def test_ci_crypto_regime_history_models_and_run_detail_endpoints(client) -> Non
 
         older_run = CiCryptoRegimeRun(
             run_started_at=base_time - timedelta(hours=1),
-            run_completed_at=base_time - timedelta(hours=1, minutes=-1),
+            run_completed_at=base_time - timedelta(minutes=59),
             status="partial",
             skip_reason=None,
             model_version="ci_rules_v1",
@@ -193,12 +197,12 @@ def test_ci_crypto_regime_history_models_and_run_detail_endpoints(client) -> Non
                     advisory_action="allow",
                     core_regime_state="neutral",
                     degraded=False,
-                    reason_codes_json=["bid_support_strong"],
-                    summary_json={"status": "healthy"},
+                    reason_codes_json=["orderbook_bid_support_strong"],
+                    summary_json={"status": "healthy", "orderbook_status": "ready", "orderbook_ready": True},
                 ),
                 CiCryptoRegimeFeatureSnapshot(
                     run_id=newer_run.id,
-                    symbol_scope="BTC/USD",
+                    symbol_scope="XBTUSD",
                     timeframe="4h",
                     feature_name="btc_hurst_4h",
                     feature_value=Decimal("0.61234"),
@@ -216,6 +220,22 @@ def test_ci_crypto_regime_history_models_and_run_detail_endpoints(client) -> Non
                     source="kraken",
                     as_of_at=base_time - timedelta(minutes=5),
                 ),
+                CiCryptoRegimeOrderbookSnapshot(
+                    run_id=newer_run.id,
+                    venue="kraken",
+                    symbol="XBTUSD",
+                    bid_levels=25,
+                    ask_levels=25,
+                    best_bid=Decimal("84000"),
+                    best_ask=Decimal("84002"),
+                    spread_bps=Decimal("0.23809"),
+                    top10_imbalance=Decimal("0.11000"),
+                    top25_depth_usd=Decimal("820000.00"),
+                    sweep_cost_buy_5k_bps=Decimal("1.23000"),
+                    sweep_cost_sell_5k_bps=Decimal("1.18000"),
+                    as_of_at=base_time - timedelta(minutes=5),
+                    payload_json={"top_bids": [], "top_asks": []},
+                ),
             ]
         )
         db.commit()
@@ -224,15 +244,15 @@ def test_ci_crypto_regime_history_models_and_run_detail_endpoints(client) -> Non
     history = client.get("/api/v1/ci/crypto-regime/history", params={"agreement_with_core": "disagree", "limit": 10})
     assert history.status_code == 200
     history_payload = history.json()
-    assert len(history_payload) == 1
-    assert history_payload[0]["state"] == "bull"
-    assert history_payload[0]["agreement_with_core"] == "disagree"
+    assert len(history_payload["items"]) == 1
+    assert history_payload["items"][0]["state"] == "bull"
+    assert history_payload["items"][0]["agreement_with_core"] == "disagree"
 
     models = client.get("/api/v1/ci/crypto-regime/models")
     assert models.status_code == 200
     models_payload = models.json()
-    assert models_payload["active_model"]["model_version"] == "ci_rules_v1"
-    assert [row["model_version"] for row in models_payload["models"]] == ["ci_rules_v1", "ci_gmm_v0"]
+    assert models_payload["active_model_version"] == "ci_rules_v1"
+    assert [row["model_version"] for row in models_payload["items"]] == ["ci_rules_v1", "ci_gmm_v0"]
 
     detail = client.get(f"/api/v1/ci/crypto-regime/runs/{newer_run_id}")
     assert detail.status_code == 200
@@ -241,6 +261,8 @@ def test_ci_crypto_regime_history_models_and_run_detail_endpoints(client) -> Non
     assert detail_payload["state"]["state"] == "bull"
     feature_names = {row["feature_name"] for row in detail_payload["features"]}
     assert feature_names == {"btc_hurst_4h", "microstructure_support_score"}
+    assert len(detail_payload["orderbook_snapshots"]) == 1
+    assert detail_payload["orderbook_snapshots"][0]["symbol"] == "XBTUSD"
 
 
 def _db():

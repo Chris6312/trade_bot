@@ -812,6 +812,11 @@ class CiCryptoRegimeRun(TimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="CiCryptoRegimeFeatureSnapshot.id",
     )
+    orderbook_snapshots: Mapped[list["CiCryptoRegimeOrderbookSnapshot"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="CiCryptoRegimeOrderbookSnapshot.id",
+    )
     state: Mapped["CiCryptoRegimeState"] = relationship(
         back_populates="run",
         cascade="all, delete-orphan",
@@ -833,6 +838,28 @@ class CiCryptoRegimeFeatureSnapshot(TimestampMixin, Base):
     as_of_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
 
     run: Mapped[CiCryptoRegimeRun] = relationship(back_populates="feature_snapshots")
+
+
+class CiCryptoRegimeOrderbookSnapshot(TimestampMixin, Base):
+    __tablename__ = "ci_crypto_regime_orderbook_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("ci_crypto_regime_runs.id", ondelete="CASCADE"), index=True)
+    venue: Mapped[str] = mapped_column(String(20), nullable=False, default="kraken")
+    symbol: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    bid_levels: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ask_levels: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    best_bid: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    best_ask: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    spread_bps: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    top10_imbalance: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    top25_depth_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    sweep_cost_buy_5k_bps: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    sweep_cost_sell_5k_bps: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    as_of_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    payload_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    run: Mapped[CiCryptoRegimeRun] = relationship(back_populates="orderbook_snapshots")
 
 
 class CiCryptoRegimeState(TimestampMixin, Base):

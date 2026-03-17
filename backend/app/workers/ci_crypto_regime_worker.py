@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from backend.app.common.adapters.models import OrderBookSnapshot
 from backend.app.core.config import Settings, get_settings
 from backend.app.services.ci_crypto_regime_service import (
     CiCryptoRegimeRunSummary,
@@ -35,9 +37,11 @@ class CiCryptoRegimeWorker:
         db: Session,
         *,
         settings: Settings | None = None,
+        orderbook_fetcher: Callable[[str, int], OrderBookSnapshot] | None = None,
     ) -> None:
         self.db = db
         self.settings = settings or get_settings()
+        self.orderbook_fetcher = orderbook_fetcher
 
     def run_if_due(
         self,
@@ -71,7 +75,11 @@ class CiCryptoRegimeWorker:
 
     def run(self, *, now: datetime | None = None) -> CiCryptoRegimeWorkerSummary:
         run_time = self._coerce_datetime(now)
-        summary = run_ci_crypto_regime_advisory(self.db, now=run_time)
+        summary = run_ci_crypto_regime_advisory(
+            self.db,
+            now=run_time,
+            orderbook_fetcher=self.orderbook_fetcher,
+        )
         logger.info(
             "ci_crypto_regime_worker_completed",
             extra={

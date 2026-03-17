@@ -99,6 +99,8 @@ def resolve_float_setting(db: Session, key: str, *, default: float) -> float:
         return float(default)
 
 def build_runtime_snapshot(db: Session, env_settings: Settings) -> dict[str, object]:
+    from backend.app.services.ci_crypto_regime_service import build_ci_crypto_regime_runtime_status
+
     app_name, app_name_source = resolve_runtime_value(
         db,
         key="app_name",
@@ -161,4 +163,5 @@ def build_runtime_snapshot(db: Session, env_settings: Settings) -> dict[str, obj
             "cors_origins": cors_origin_source,
             "database_url_masked": "environment",
         },
+        "ci_crypto_regime": build_ci_crypto_regime_runtime_status(db),
     }

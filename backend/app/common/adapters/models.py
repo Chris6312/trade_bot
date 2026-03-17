@@ -85,3 +85,19 @@ class OrderResult:
     status: str
     client_order_id: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True, frozen=True)
+class OrderBookLevel:
+    price: Decimal
+    volume: Decimal
+    timestamp: datetime | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class OrderBookSnapshot:
+    symbol: str
+    as_of: datetime
+    bids: tuple[OrderBookLevel, ...] = ()
+    asks: tuple[OrderBookLevel, ...] = ()
+    raw: dict[str, Any] = field(default_factory=dict)

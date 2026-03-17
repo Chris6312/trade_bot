@@ -9,6 +9,7 @@ from backend.app.api.deps import get_db
 from backend.app.schemas.ci_crypto_regime import (
     CiCryptoRegimeCurrentRead,
     CiCryptoRegimeFeatureSnapshotRead,
+    CiCryptoRegimeOrderbookSnapshotRead,
     CiCryptoRegimeHistoryRead,
     CiCryptoRegimeModelListRead,
     CiCryptoRegimeModelRegistryRead,
@@ -69,6 +70,7 @@ def get_ci_crypto_regime_run(
         run=CiCryptoRegimeRunRead.model_validate(detail["run"]),
         state=CiCryptoRegimeStateRead.model_validate(detail["state"]) if detail["state"] is not None else None,
         features=[CiCryptoRegimeFeatureSnapshotRead.model_validate(item) for item in detail["features"]],
+        orderbook_snapshots=[CiCryptoRegimeOrderbookSnapshotRead.model_validate(item) for item in detail["orderbook_snapshots"]],
     )
 
 

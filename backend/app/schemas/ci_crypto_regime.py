@@ -41,6 +41,28 @@ class CiCryptoRegimeFeatureSnapshotRead(BaseModel):
     updated_at: datetime
 
 
+class CiCryptoRegimeOrderbookSnapshotRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    run_id: int
+    venue: str
+    symbol: str
+    bid_levels: int
+    ask_levels: int
+    best_bid: Decimal | None
+    best_ask: Decimal | None
+    spread_bps: Decimal | None
+    top10_imbalance: Decimal | None
+    top25_depth_usd: Decimal | None
+    sweep_cost_buy_5k_bps: Decimal | None
+    sweep_cost_sell_5k_bps: Decimal | None
+    as_of_at: datetime | None
+    payload_json: dict[str, Any] | None
+    created_at: datetime
+    updated_at: datetime
+
+
 class CiCryptoRegimeRunRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -97,6 +119,13 @@ class CiCryptoRegimeCurrentRead(BaseModel):
     degraded: bool
     reason_codes: list[str] = Field(default_factory=list)
     summary: dict[str, Any] = Field(default_factory=dict)
+    core_regime_timeframe: str | None = None
+    last_run_status: str | None = None
+    last_run_started_at: datetime | None = None
+    last_run_completed_at: datetime | None = None
+    last_run_used_orderbook: bool = False
+    orderbook_status: str | None = None
+    orderbook_ready: bool = False
 
 
 class CiCryptoRegimeHistoryRead(BaseModel):
@@ -112,3 +141,30 @@ class CiCryptoRegimeRunDetailRead(BaseModel):
     run: CiCryptoRegimeRunRead
     state: CiCryptoRegimeStateRead | None
     features: list[CiCryptoRegimeFeatureSnapshotRead] = Field(default_factory=list)
+    orderbook_snapshots: list[CiCryptoRegimeOrderbookSnapshotRead] = Field(default_factory=list)
+
+
+class CiCryptoRegimeRuntimeStatusRead(BaseModel):
+    enabled: bool
+    advisory_only: bool
+    model_version: str
+    mode: str
+    use_orderbook: bool
+    use_defillama: bool
+    use_hurst: bool
+    promote_to_runtime: bool
+    run_interval_minutes: int
+    stale_after_seconds: int
+    state: str | None = None
+    confidence: Decimal | None = None
+    agreement_with_core: str | None = None
+    advisory_action: str | None = None
+    core_regime_state: str | None = None
+    core_regime_timeframe: str | None = None
+    degraded: bool = False
+    last_run_status: str | None = None
+    last_run_started_at: datetime | None = None
+    last_run_completed_at: datetime | None = None
+    last_run_used_orderbook: bool = False
+    orderbook_status: str | None = None
+    orderbook_ready: bool = False

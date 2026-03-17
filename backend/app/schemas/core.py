@@ -148,6 +148,7 @@ class RuntimeSettingsSnapshot(BaseModel):
     cors_origins: list[str]
     database_url_masked: str
     setting_sources: dict[str, Literal["environment", "database"]]
+    ci_crypto_regime: dict[str, Any] | None = None
 
 
 class WorkflowRunCreate(BaseModel):
