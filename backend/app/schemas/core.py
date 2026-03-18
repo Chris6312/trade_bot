@@ -256,6 +256,10 @@ class RegimeSnapshotRead(BaseModel):
     participation_ratio: Decimal
     volatility_support_ratio: Decimal
     payload: dict[str, Any] | None
+    is_stale: bool = False
+    stale_reason: str | None = None
+    latest_feature_at: datetime | None = None
+    feature_lag_seconds: int = 0
 
 
 class RegimeSyncStateRead(BaseModel):
@@ -271,6 +275,10 @@ class RegimeSyncStateRead(BaseModel):
     symbol_count: int
     last_status: str
     last_error: str | None
+    is_stale: bool = False
+    stale_reason: str | None = None
+    latest_feature_at: datetime | None = None
+    feature_lag_seconds: int = 0
 
 
 class StrategySnapshotRead(BaseModel):

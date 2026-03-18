@@ -188,6 +188,30 @@ def test_strategy_api_returns_empty_list_when_no_current_rows(client) -> None:
 
 
 
+
+def test_strategy_engine_treats_stale_regime_as_unavailable(db_session: Session) -> None:
+    _seed_universe(db_session, asset_class="stock", venue="alpaca", symbols=("AAPL",))
+    _seed_stock_ready_symbol(db_session, symbol="AAPL")
+    _seed_regime(db_session, asset_class="stock", venue="alpaca", timeframe="1h", regime="bull", entry_policy="full")
+
+    stale_regime = db_session.query(RegimeSnapshot).filter(RegimeSnapshot.asset_class == "stock", RegimeSnapshot.timeframe == "1h").one()
+    stale_regime.regime_timestamp = datetime(2026, 3, 14, 12, 30, tzinfo=UTC)
+    stale_regime.computed_at = datetime(2026, 3, 14, 12, 35, tzinfo=UTC)
+    db_session.commit()
+
+    worker = StrategyWorker(db_session)
+    summary = worker.build_stock_candidates(timeframe="1h", now=datetime(2026, 3, 14, 14, 50, tzinfo=UTC))
+
+    assert summary.skipped_reason == "regime_stale"
+    rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="1h")
+    assert len(rows) == 3
+    assert all("regime_unavailable" in (row.blocked_reasons or []) for row in rows)
+
+    state = get_strategy_sync_state(db_session, asset_class="stock", timeframe="1h")
+    assert state is not None
+    assert state.last_status == "regime_stale"
+    assert state.last_error == "features_newer_than_regime"
+
 def _row(rows, *, symbol: str, strategy_name: str):
     return next(row for row in rows if row.symbol == symbol and row.strategy_name == strategy_name)
 

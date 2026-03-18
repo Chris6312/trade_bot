@@ -156,7 +156,7 @@ def test_phase17_universe_route_marks_symbol_blocked_when_all_strategies_blocked
     response = client.get("/api/v1/universe/stock/current")
     assert response.status_code == 200
     payload = response.json()[0]["payload"]
-    assert payload["eligibility"] == "Blocked"
+    assert payload["eligibility"] == "Blocked by Regime"
     assert "regime_blocked" in payload["block_reason"]
 
 

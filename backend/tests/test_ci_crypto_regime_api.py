@@ -111,6 +111,78 @@ def test_ci_crypto_regime_current_endpoint_uses_latest_state_and_settings(client
     assert payload["degraded_reasons"] == []
 
 
+
+def test_ci_crypto_regime_current_endpoint_marks_runtime_state_stale_when_core_moves_ahead(client) -> None:
+    with _db() as db:
+        now = datetime(2026, 3, 16, 16, 45, 30, tzinfo=UTC)
+        db.add_all(
+            [
+                Setting(key="CI_CRYPTO_REGIME_ENABLED", value="true", value_type="bool"),
+                Setting(key="CI_CRYPTO_REGIME_ADVISORY_ONLY", value="true", value_type="bool"),
+                RegimeSnapshot(
+                    asset_class="crypto",
+                    venue="kraken",
+                    source="regime_engine",
+                    timeframe="4h",
+                    regime_timestamp=now,
+                    computed_at=now,
+                    regime="bull",
+                    entry_policy="full",
+                    symbol_count=15,
+                    bull_score=Decimal("0.81"),
+                    breadth_ratio=Decimal("0.70"),
+                    benchmark_support_ratio=Decimal("1.0"),
+                    participation_ratio=Decimal("0.72"),
+                    volatility_support_ratio=Decimal("0.64"),
+                    payload={"source": "core"},
+                ),
+            ]
+        )
+        run = CiCryptoRegimeRun(
+            run_started_at=now - timedelta(minutes=16),
+            run_completed_at=now - timedelta(minutes=15),
+            status="success",
+            model_version="ci_rules_v1",
+            feature_set_version="ci_crypto_regime_feature_set_v1",
+            used_orderbook=False,
+            used_defillama=False,
+            used_hurst=False,
+            data_window_end_at=now - timedelta(minutes=16),
+            degraded=False,
+        )
+        db.add(run)
+        db.flush()
+        db.add(
+            CiCryptoRegimeState(
+                run_id=run.id,
+                as_of_at=now - timedelta(minutes=20),
+                state="bull",
+                confidence=Decimal("0.81234"),
+                cluster_id=0,
+                cluster_prob_bull=Decimal("0.81234"),
+                cluster_prob_neutral=Decimal("0.12000"),
+                cluster_prob_risk_off=Decimal("0.06766"),
+                agreement_with_core="agree",
+                advisory_action="allow",
+                core_regime_state="bull",
+                degraded=False,
+                reason_codes_json=["orderbook_bid_support_strong"],
+                summary_json={"status": "healthy", "degraded_reasons": []},
+            )
+        )
+        db.commit()
+
+    response = client.get("/api/v1/ci/crypto-regime/current")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("stale", payload.get("is_stale")) is True
+    assert payload.get("expires_at") is not None
+    assert payload["stale_reason"] == "core_regime_newer_than_advisory_state"
+    assert payload["state"] == "unavailable"
+    assert payload["advisory_action"] == "unavailable"
+    assert "stale_runtime_state" in payload["reason_codes"]
+    assert "core_regime_newer_than_advisory_state" in payload["degraded_reasons"]
+
 def test_ci_crypto_regime_history_models_and_run_detail_endpoints(client) -> None:
     with _db() as db:
         base_time = datetime(2026, 3, 16, 17, 0, tzinfo=UTC)

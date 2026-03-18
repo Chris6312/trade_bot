@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from statistics import fmean
 from typing import Any, Iterable
 
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from backend.app.models.core import FeatureSnapshot, RegimeSnapshot, RegimeSyncState
@@ -59,6 +60,15 @@ class RegimePersistenceSummary:
     regime_timestamp: datetime | None
     last_computed_at: datetime | None
     skipped_reason: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class RegimeFreshness:
+    is_stale: bool
+    stale_reason: str | None
+    latest_feature_at: datetime | None
+    regime_timestamp: datetime | None
+    feature_lag_seconds: int
 
 
 def ensure_single_regime_writer(writer_name: str) -> None:
@@ -126,21 +136,199 @@ def list_latest_feature_snapshots_for_symbols(
     timeframe: str,
     symbols: Iterable[str],
 ) -> list[FeatureSnapshot]:
-    latest_rows: list[FeatureSnapshot] = []
-    for symbol in symbols:
-        row = (
-            db.query(FeatureSnapshot)
-            .filter(
-                FeatureSnapshot.asset_class == asset_class,
-                FeatureSnapshot.symbol == symbol,
-                FeatureSnapshot.timeframe == timeframe,
-            )
-            .order_by(FeatureSnapshot.candle_timestamp.desc())
-            .first()
+    requested_symbols = tuple(dict.fromkeys(str(symbol) for symbol in symbols if str(symbol)))
+    if not requested_symbols:
+        return []
+
+    latest_per_symbol = (
+        db.query(
+            FeatureSnapshot.symbol.label("symbol"),
+            func.max(FeatureSnapshot.candle_timestamp).label("latest_candle_timestamp"),
         )
-        if row is not None:
-            latest_rows.append(row)
-    return latest_rows
+        .filter(
+            FeatureSnapshot.asset_class == asset_class,
+            FeatureSnapshot.timeframe == timeframe,
+            FeatureSnapshot.symbol.in_(requested_symbols),
+        )
+        .group_by(FeatureSnapshot.symbol)
+        .subquery()
+    )
+
+    return (
+        db.query(FeatureSnapshot)
+        .join(
+            latest_per_symbol,
+            and_(
+                FeatureSnapshot.symbol == latest_per_symbol.c.symbol,
+                FeatureSnapshot.candle_timestamp == latest_per_symbol.c.latest_candle_timestamp,
+            ),
+        )
+        .filter(
+            FeatureSnapshot.asset_class == asset_class,
+            FeatureSnapshot.timeframe == timeframe,
+            FeatureSnapshot.symbol.in_(requested_symbols),
+        )
+        .order_by(FeatureSnapshot.symbol.asc())
+        .all()
+    )
+
+
+def get_latest_feature_timestamp(
+    db: Session,
+    *,
+    asset_class: str,
+    timeframe: str,
+    symbols: Iterable[str] | None = None,
+) -> datetime | None:
+    query = db.query(func.max(FeatureSnapshot.candle_timestamp)).filter(
+        FeatureSnapshot.asset_class == asset_class,
+        FeatureSnapshot.timeframe == timeframe,
+    )
+    requested_symbols = tuple(dict.fromkeys(str(symbol) for symbol in (symbols or ()) if str(symbol)))
+    if symbols is not None and not requested_symbols:
+        return None
+    if requested_symbols:
+        query = query.filter(FeatureSnapshot.symbol.in_(requested_symbols))
+    value = query.scalar()
+    return ensure_utc(value)
+
+
+def evaluate_regime_freshness(
+    db: Session,
+    *,
+    asset_class: str,
+    timeframe: str,
+    symbols: Iterable[str] | None = None,
+    regime_snapshot: RegimeSnapshot | None = None,
+) -> RegimeFreshness:
+    snapshot = regime_snapshot or get_latest_regime_snapshot(db, asset_class=asset_class, timeframe=timeframe)
+    regime_timestamp = ensure_utc(snapshot.regime_timestamp) if snapshot is not None else None
+    latest_feature_at = get_latest_feature_timestamp(
+        db,
+        asset_class=asset_class,
+        timeframe=timeframe,
+        symbols=symbols,
+    )
+    sync_state = get_regime_sync_state(db, asset_class=asset_class, timeframe=timeframe)
+
+    stale_reason: str | None = None
+    if snapshot is None:
+        stale_reason = "regime_missing"
+    elif sync_state is not None and sync_state.last_status != "synced":
+        stale_reason = f"regime_sync_{sync_state.last_status}"
+    elif latest_feature_at is not None and regime_timestamp is not None and regime_timestamp < latest_feature_at:
+        stale_reason = "features_newer_than_regime"
+    elif (
+        sync_state is not None
+        and ensure_utc(sync_state.last_feature_at) is not None
+        and regime_timestamp is not None
+        and ensure_utc(sync_state.last_feature_at) > regime_timestamp
+    ):
+        stale_reason = "sync_state_ahead_of_regime"
+
+    feature_lag_seconds = 0
+    if regime_timestamp is not None and latest_feature_at is not None and latest_feature_at > regime_timestamp:
+        feature_lag_seconds = int((latest_feature_at - regime_timestamp).total_seconds())
+
+    return RegimeFreshness(
+        is_stale=stale_reason is not None,
+        stale_reason=stale_reason,
+        latest_feature_at=latest_feature_at,
+        regime_timestamp=regime_timestamp,
+        feature_lag_seconds=feature_lag_seconds,
+    )
+
+
+def get_latest_fresh_regime_snapshot(
+    db: Session,
+    *,
+    asset_class: str,
+    timeframe: str,
+    symbols: Iterable[str] | None = None,
+) -> RegimeSnapshot | None:
+    snapshot = get_latest_regime_snapshot(db, asset_class=asset_class, timeframe=timeframe)
+    freshness = evaluate_regime_freshness(
+        db,
+        asset_class=asset_class,
+        timeframe=timeframe,
+        symbols=symbols,
+        regime_snapshot=snapshot,
+    )
+    if freshness.is_stale:
+        return None
+    return snapshot
+
+
+def build_regime_current_snapshot(
+    db: Session,
+    *,
+    asset_class: str,
+    timeframe: str,
+) -> dict[str, Any] | None:
+    snapshot = get_latest_regime_snapshot(db, asset_class=asset_class, timeframe=timeframe)
+    if snapshot is None:
+        return None
+    freshness = evaluate_regime_freshness(
+        db,
+        asset_class=asset_class,
+        timeframe=timeframe,
+        regime_snapshot=snapshot,
+    )
+    payload = dict(snapshot.payload or {})
+    payload.setdefault("is_stale", freshness.is_stale)
+    payload.setdefault("stale_reason", freshness.stale_reason)
+    payload.setdefault("latest_feature_at", freshness.latest_feature_at.isoformat() if freshness.latest_feature_at else None)
+    payload.setdefault("feature_lag_seconds", freshness.feature_lag_seconds)
+    return {
+        "id": snapshot.id,
+        "asset_class": snapshot.asset_class,
+        "venue": snapshot.venue,
+        "source": snapshot.source,
+        "timeframe": snapshot.timeframe,
+        "regime_timestamp": snapshot.regime_timestamp,
+        "computed_at": snapshot.computed_at,
+        "regime": snapshot.regime,
+        "entry_policy": snapshot.entry_policy,
+        "symbol_count": snapshot.symbol_count,
+        "bull_score": snapshot.bull_score,
+        "breadth_ratio": snapshot.breadth_ratio,
+        "benchmark_support_ratio": snapshot.benchmark_support_ratio,
+        "participation_ratio": snapshot.participation_ratio,
+        "volatility_support_ratio": snapshot.volatility_support_ratio,
+        "payload": payload,
+        "is_stale": freshness.is_stale,
+        "stale_reason": freshness.stale_reason,
+        "latest_feature_at": freshness.latest_feature_at,
+        "feature_lag_seconds": freshness.feature_lag_seconds,
+    }
+
+
+def build_regime_sync_snapshot(
+    db: Session,
+    *,
+    asset_class: str,
+    timeframe: str,
+) -> dict[str, Any] | None:
+    record = get_regime_sync_state(db, asset_class=asset_class, timeframe=timeframe)
+    if record is None:
+        return None
+    freshness = evaluate_regime_freshness(db, asset_class=asset_class, timeframe=timeframe)
+    return {
+        "asset_class": record.asset_class,
+        "venue": record.venue,
+        "timeframe": record.timeframe,
+        "last_computed_at": record.last_computed_at,
+        "last_feature_at": record.last_feature_at,
+        "regime": record.regime,
+        "entry_policy": record.entry_policy,
+        "symbol_count": record.symbol_count,
+        "last_status": record.last_status,
+        "last_error": record.last_error,
+        "is_stale": freshness.is_stale,
+        "stale_reason": freshness.stale_reason,
+        "latest_feature_at": freshness.latest_feature_at,
+        "feature_lag_seconds": freshness.feature_lag_seconds,
+    }
 
 
 def classify_regime_from_features(

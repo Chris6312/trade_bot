@@ -112,6 +112,7 @@ class CiCryptoRegimeCurrentRead(BaseModel):
     state: str
     confidence: Decimal
     stale: bool = False
+    stale_reason: str | None = None
     expires_at: datetime | None = None
     core_regime_state: str | None
     agreement_with_core: str
@@ -167,6 +168,7 @@ class CiCryptoRegimeRuntimeStatusRead(BaseModel):
     run_interval_minutes: int
     stale_after_seconds: int
     stale: bool = False
+    stale_reason: str | None = None
     expires_at: datetime | None = None
     state: str | None = None
     confidence: Decimal | None = None

@@ -210,6 +210,47 @@ def test_regime_worker_handles_missing_upstream_feature_data(
 
 
 
+
+def test_regime_api_marks_current_state_stale_when_features_are_newer(client) -> None:
+    session = get_session_factory()()
+    try:
+        _seed_universe(session, asset_class="stock", venue="alpaca", symbols=("SPY", "QQQ", "AAPL"))
+        _seed_feature_snapshots(
+            session,
+            asset_class="stock",
+            venue="alpaca",
+            timeframe="1h",
+            rows={
+                "SPY": {"close": 105, "sma": 100, "ema": 101, "momentum": 0.05, "rv": 1.1, "vol": 0.01, "slope": 0.02},
+                "QQQ": {"close": 107, "sma": 103, "ema": 104, "momentum": 0.04, "rv": 1.0, "vol": 0.012, "slope": 0.015},
+                "AAPL": {"close": 210, "sma": 205, "ema": 206, "momentum": 0.03, "rv": 0.96, "vol": 0.013, "slope": 0.012},
+            },
+        )
+        worker = RegimeWorker(session)
+        worker.build_stock_regime(timeframe="1h", now=datetime(2026, 3, 14, 17, 0, tzinfo=UTC))
+        snapshot = get_latest_regime_snapshot(session, asset_class="stock", timeframe="1h")
+        assert snapshot is not None
+        snapshot.regime_timestamp = datetime(2026, 3, 14, 12, 30, tzinfo=UTC)
+        snapshot.computed_at = datetime(2026, 3, 14, 12, 35, tzinfo=UTC)
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get("/api/v1/regime/stock/current", params={"timeframe": "1h"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["is_stale"] is True
+    assert payload["stale_reason"] == "features_newer_than_regime"
+    assert payload["latest_feature_at"] == "2026-03-14T13:30:00Z"
+    assert payload["feature_lag_seconds"] == 3600
+
+    sync_response = client.get("/api/v1/regime/stock/sync-state", params={"timeframe": "1h"})
+    assert sync_response.status_code == 200
+    sync_payload = sync_response.json()
+    assert sync_payload["is_stale"] is True
+    assert sync_payload["stale_reason"] == "features_newer_than_regime"
+
 def _seed_universe(db: Session, *, asset_class: str, venue: str, symbols: tuple[str, ...]) -> None:
     persist_universe_run(
         db,

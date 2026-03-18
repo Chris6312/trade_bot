@@ -174,17 +174,15 @@ def _current_strategy_summary_by_symbol(db: Session, *, asset_class: str, symbol
 
         best_row = max(symbol_rows, key=_strategy_priority_key)
         best_row_reasons = [str(reason) for reason in (best_row.blocked_reasons or []) if str(reason)]
-        any_ready = any((row.status or "").lower() == "ready" for row in symbol_rows)
-        all_blocked = all((row.status or "").lower() == "blocked" for row in symbol_rows)
-        if any_ready:
-            eligibility = "Eligible"
+        eligibility = _classify_universe_eligibility(best_row)
+        if eligibility == "Eligible":
             block_reason = None
-        elif all_blocked:
-            eligibility = "Blocked"
-            block_reason = ", ".join(best_row_reasons) if best_row_reasons else (best_row.decision_reason or "all_strategies_blocked")
         else:
-            eligibility = "Not ready"
             block_reason = ", ".join(best_row_reasons) if best_row_reasons else best_row.decision_reason
+            if not block_reason and eligibility == "Blocked by Regime":
+                block_reason = "regime_blocked"
+            if not block_reason and eligibility == "Not Ready":
+                block_reason = "awaiting_signal_quality"
 
         summaries[symbol] = {
             "eligibility": eligibility,
@@ -338,6 +336,51 @@ def _max_24h_deviation(timeframe: str) -> timedelta:
         "4h": timedelta(hours=4),
         "1d": timedelta(hours=18),
     }.get(timeframe, timedelta(hours=2))
+
+
+def _classify_universe_eligibility(best_row: StrategySnapshot) -> str:
+    status = (best_row.status or "").lower()
+    if status == "ready":
+        return "Eligible"
+    if _is_regime_blocked(best_row):
+        return "Blocked by Regime"
+    if _is_near_ready(best_row):
+        return "Near Ready"
+    return "Not Ready"
+
+
+def _is_regime_blocked(row: StrategySnapshot) -> bool:
+    reasons = {str(reason).lower() for reason in (row.blocked_reasons or []) if str(reason)}
+    decision = str(row.decision_reason or "").lower()
+    entry_policy = str(row.entry_policy or "").lower()
+    regime = str(row.regime or "").lower()
+    status = str(row.status or "").lower()
+    return (
+        "regime_blocked" in reasons
+        or decision == "regime_blocked"
+        or entry_policy == "blocked"
+        or (status == "blocked" and regime == "risk_off")
+    )
+
+
+def _is_near_ready(row: StrategySnapshot) -> bool:
+    reasons = {str(reason).lower() for reason in (row.blocked_reasons or []) if str(reason)}
+    severe_reasons = {
+        "missing_feature_snapshot",
+        "insufficient_candles",
+        "vwap_missing",
+        "regime_unavailable",
+        "strategy_disabled",
+    }
+    if reasons & severe_reasons:
+        return False
+
+    readiness = float(row.readiness_score or 0)
+    threshold = float(row.threshold_score or 0)
+    if threshold > 0:
+        return readiness >= max(0.6, threshold - 0.03)
+    return readiness >= 0.65
+
 
 
 def _strategy_priority_key(row: StrategySnapshot) -> tuple[int, float, float, datetime, int]:

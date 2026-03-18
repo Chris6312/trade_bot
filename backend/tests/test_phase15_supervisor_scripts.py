@@ -117,3 +117,26 @@ def test_start_bot_primes_worker_pipeline_before_frontend() -> None:
     assert "/controls/candles/backfill" in script
     assert "/controls/regime/run-once" in script
     assert "/controls/strategy/run-once" in script
+
+
+def test_start_bot_batches_regime_and_strategy_requests_by_timeframe() -> None:
+    script = _read_text(_script_path("Start-Bot.ps1"))
+
+    pipeline_index = script.index("function Invoke-StartupPipeline")
+    regime_loop_index = script.index("foreach ($payload in $dailyFilterPayloads)", pipeline_index)
+    strategy_loop_index = script.index("foreach ($payload in $strategyPayloads)", pipeline_index)
+
+    assert "$dailyFilterPayloads" in script
+    assert "$strategyPayloads" in script
+    assert "@{ asset_class = 'stock'; timeframe = '1d' }" in script
+    assert "@{ asset_class = 'crypto'; timeframe = '1d' }" in script
+    assert "@{ asset_class = 'stock'; timeframe = '1h' }" in script
+    assert "@{ asset_class = 'stock'; timeframe = '15m' }" in script
+    assert "@{ asset_class = 'stock'; timeframe = '5m' }" in script
+    assert "@{ asset_class = 'crypto'; timeframe = '4h' }" in script
+    assert "@{ asset_class = 'crypto'; timeframe = '1h' }" in script
+    assert "@{ asset_class = 'crypto'; timeframe = '15m' }" in script
+    assert "Regime recompute ({0} {1})" in script
+    assert "Strategy refresh ({0} {1})" in script
+    assert "-TimeoutSeconds 180" in script
+    assert regime_loop_index < strategy_loop_index

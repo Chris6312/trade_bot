@@ -417,27 +417,8 @@ def _mean_decimal(values: list[Any]) -> float | None:
     return round(sum(cleaned) / len(cleaned), 5)
 
 
-def _state_freshness_payload(summary: dict[str, Any], *, run_time: datetime | None = None) -> dict[str, Any]:
-    now = ensure_utc(run_time) or datetime.now(UTC)
-    raw = summary if isinstance(summary, dict) else {}
-    fresh_until_map: dict[str, datetime | None] = {}
-    for timeframe, value in (raw.get("fresh_until_by_timeframe") or {}).items():
-        parsed = ensure_utc(value) if isinstance(value, datetime) else ensure_utc(_safe_parse_iso(value))
-        fresh_until_map[str(timeframe)] = parsed
-    non_null = [value for value in fresh_until_map.values() if value is not None]
-    expires_at = min(non_null) if non_null else None
-    stale_timeframes = [str(item) for item in (raw.get("stale_timeframes") or [])]
-    stale = bool(raw.get("stale", False)) or (expires_at is not None and now > expires_at)
-    return {
-        "stale": stale,
-        "expires_at": expires_at,
-        "stale_timeframes": stale_timeframes,
-        "fresh_until_by_timeframe": fresh_until_map,
-    }
-
-
 def _safe_parse_iso(value: Any) -> datetime | None:
-    if not value:
+    if value is None:
         return None
     if isinstance(value, datetime):
         return ensure_utc(value)
@@ -447,32 +428,92 @@ def _safe_parse_iso(value: Any) -> datetime | None:
         return None
 
 
+def _state_freshness_payload(summary: dict[str, Any]) -> dict[str, Any]:
+    raw = summary if isinstance(summary, dict) else {}
+    fresh_until_map: dict[str, datetime | None] = {}
+    for timeframe, value in (raw.get("fresh_until_by_timeframe") or {}).items():
+        parsed = ensure_utc(value) if isinstance(value, datetime) else _safe_parse_iso(value)
+        fresh_until_map[str(timeframe)] = parsed
+
+    non_null = [value for value in fresh_until_map.values() if value is not None]
+    expires_at = min(non_null) if non_null else None
+    stale_timeframes = [str(item) for item in (raw.get("stale_timeframes") or [])]
+
+    return {
+        "stale": bool(raw.get("stale", False)),
+        "stale_reason": str(raw.get("stale_reason")) if raw.get("stale_reason") else None,
+        "expires_at": expires_at,
+        "stale_timeframes": stale_timeframes,
+        "fresh_until_by_timeframe": fresh_until_map,
+    }
+
+
 def build_ci_crypto_regime_current_snapshot(db: Session) -> dict[str, Any] | None:
     state = get_latest_ci_crypto_regime_state(db)
     if state is None:
         return None
+
     settings = resolve_ci_crypto_regime_settings(db)
     ensure_default_ci_model_registry(db, settings=settings)
     db.flush()
+
     latest_core = _latest_core_regime_for_display(db)
     summary = state.summary_json or {}
     run = state.run or get_latest_ci_crypto_regime_run(db)
     freshness = _state_freshness_payload(summary)
+
+    state_as_of = ensure_utc(state.as_of_at)
+    run_completed_at = ensure_utc(run.run_completed_at) if run and run.run_completed_at else None
+    core_computed_at = ensure_utc(latest_core.computed_at) if latest_core and latest_core.computed_at else None
+
+    comparison_anchor = run_completed_at or state_as_of
+    core_moved_ahead = bool(core_computed_at and comparison_anchor and core_computed_at > comparison_anchor)
+
+    stale = bool(freshness["stale"] or core_moved_ahead)
+    expires_at = freshness["expires_at"] or (core_computed_at if core_moved_ahead else None)
+
+    stale_timeframes = list(freshness["stale_timeframes"])
+    if core_moved_ahead and latest_core and latest_core.timeframe and latest_core.timeframe not in stale_timeframes:
+        stale_timeframes.append(latest_core.timeframe)
+
+    stale_reason = freshness.get("stale_reason")
+    if core_moved_ahead:
+        stale_reason = "core_regime_newer_than_advisory_state"
+    elif stale and not stale_reason:
+        stale_reason = "stale_internal_data"
+
+    display_state = "unavailable" if stale else state.state
+    display_advisory_action = "unavailable" if stale else state.advisory_action
+    display_agreement_with_core = "core_unavailable" if stale else state.agreement_with_core
+
+    display_reason_codes = list(state.reason_codes_json or [])
+    if stale and "stale_runtime_state" not in display_reason_codes:
+        display_reason_codes.append("stale_runtime_state")
+    if core_moved_ahead and "core_regime_newer_than_advisory_state" not in display_reason_codes:
+        display_reason_codes.append("core_regime_newer_than_advisory_state")
+
+    display_degraded_reasons = list(summary.get("degraded_reasons", []))
+    if stale and "stale_internal_data" not in display_degraded_reasons:
+        display_degraded_reasons.append("stale_internal_data")
+    if core_moved_ahead and "core_regime_newer_than_advisory_state" not in display_degraded_reasons:
+        display_degraded_reasons.append("core_regime_newer_than_advisory_state")
+
     return {
         "enabled": settings.enabled,
         "advisory_only": settings.advisory_only,
         "as_of_at": state.as_of_at,
-        "state": state.state,
+        "state": display_state,
         "confidence": state.confidence,
-        "stale": freshness["stale"],
-        "expires_at": freshness["expires_at"],
+        "stale": stale,
+        "stale_reason": stale_reason,
+        "expires_at": expires_at,
         "core_regime_state": state.core_regime_state,
-        "agreement_with_core": state.agreement_with_core,
-        "advisory_action": state.advisory_action,
+        "agreement_with_core": display_agreement_with_core,
+        "advisory_action": display_advisory_action,
         "model_version": run.model_version if run else settings.model_version,
         "feature_set_version": run.feature_set_version if run else CI_FEATURE_SET_VERSION,
         "degraded": state.degraded,
-        "reason_codes": list(state.reason_codes_json or []),
+        "reason_codes": sorted(display_reason_codes),
         "summary": summary,
         "core_regime_timeframe": latest_core.timeframe if latest_core else None,
         "last_run_status": run.status if run else None,
@@ -487,8 +528,8 @@ def build_ci_crypto_regime_current_snapshot(db: Session) -> dict[str, Any] | Non
         "defillama_ready": bool(summary.get("defillama_ready", False)),
         "hurst_status": summary.get("hurst_status"),
         "hurst_ready": bool(summary.get("hurst_ready", False)),
-        "degraded_reasons": list(summary.get("degraded_reasons", [])),
-        "stale_timeframes": freshness["stale_timeframes"],
+        "degraded_reasons": sorted(display_degraded_reasons),
+        "stale_timeframes": stale_timeframes,
         "fresh_until_by_timeframe": freshness["fresh_until_by_timeframe"],
     }
 
@@ -509,6 +550,7 @@ def build_ci_crypto_regime_runtime_status(db: Session) -> dict[str, Any]:
         "stale_after_seconds": settings.stale_after_seconds,
         "state": current.get("state") if current else None,
         "stale": bool(current.get("stale", False)) if current else False,
+        "stale_reason": current.get("stale_reason") if current else None,
         "expires_at": current.get("expires_at") if current else None,
         "confidence": current.get("confidence") if current else None,
         "agreement_with_core": current.get("agreement_with_core") if current else None,

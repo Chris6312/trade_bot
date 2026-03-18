@@ -15,7 +15,7 @@ from backend.app.common.strategy_support import (
 )
 from backend.app.crypto.strategies import CRYPTO_STRATEGIES
 from backend.app.models.core import Candle, FeatureSnapshot, StrategySnapshot, StrategySyncState
-from backend.app.services.regime_service import get_latest_regime_snapshot
+from backend.app.services.regime_service import evaluate_regime_freshness, get_latest_regime_snapshot
 from backend.app.services.settings_service import get_setting
 from backend.app.stocks.strategies import STOCK_STRATEGIES
 
@@ -206,7 +206,15 @@ def rebuild_strategy_snapshots_for_asset_class(
             skipped_reason="universe_unresolved",
         )
 
-    regime = get_latest_regime_snapshot(db, asset_class=asset_class, timeframe=timeframe)
+    raw_regime = get_latest_regime_snapshot(db, asset_class=asset_class, timeframe=timeframe)
+    regime_freshness = evaluate_regime_freshness(
+        db,
+        asset_class=asset_class,
+        timeframe=timeframe,
+        symbols=requested_symbols,
+        regime_snapshot=raw_regime,
+    )
+    regime = None if regime_freshness.is_stale else raw_regime
     definitions = STOCK_STRATEGIES if asset_class == "stock" else CRYPTO_STRATEGIES
 
     rows: list[ComputedStrategyRow] = []
@@ -294,9 +302,14 @@ def rebuild_strategy_snapshots_for_asset_class(
 
     last_status = "synced"
     skipped_reason: str | None = None
-    if regime is None:
+    last_error: str | None = None
+    if raw_regime is None:
         last_status = "regime_unavailable"
         skipped_reason = "regime_unavailable"
+    elif regime_freshness.is_stale:
+        last_status = "regime_stale"
+        skipped_reason = "regime_stale"
+        last_error = regime_freshness.stale_reason
     elif symbols_with_features == 0:
         last_status = "no_features"
         skipped_reason = "no_features"
@@ -314,7 +327,7 @@ def rebuild_strategy_snapshots_for_asset_class(
         regime=regime.regime if regime is not None else None,
         entry_policy=regime.entry_policy if regime is not None else None,
         last_status=last_status,
-        last_error=None,
+        last_error=last_error,
     )
     db.commit()
     return StrategyPersistenceSummary(

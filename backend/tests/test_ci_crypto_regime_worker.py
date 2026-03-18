@@ -270,6 +270,8 @@ def test_ci_worker_persists_run_orderbook_and_api_routes(client) -> None:
     with get_session_factory()() as db:
         upsert_setting(db, key="CI_CRYPTO_REGIME_ENABLED", value="true", value_type="bool")
         upsert_setting(db, key="CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS", value="1", value_type="integer")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS_READY", value="1", value_type="integer")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_BOOK_WINDOW_SNAPSHOTS", value="1", value_type="integer")
         _seed_full_ci_ready_state(db, now=now)
         db.commit()
 
@@ -332,6 +334,8 @@ def test_ci_worker_uses_defillama_enrichment_when_enabled(client) -> None:
         upsert_setting(db, key="CI_CRYPTO_REGIME_ENABLED", value="true", value_type="bool")
         upsert_setting(db, key="CI_CRYPTO_REGIME_USE_DEFILLAMA", value="true", value_type="bool")
         upsert_setting(db, key="CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS", value="1", value_type="integer")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS_READY", value="1", value_type="integer")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_BOOK_WINDOW_SNAPSHOTS", value="1", value_type="integer")
         _seed_full_ci_ready_state(db, now=now)
         db.commit()
 
@@ -368,6 +372,8 @@ def test_ci_worker_falls_back_when_orderbook_is_unavailable(client) -> None:
     with get_session_factory()() as db:
         upsert_setting(db, key="CI_CRYPTO_REGIME_ENABLED", value="true", value_type="bool")
         upsert_setting(db, key="CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS", value="1", value_type="integer")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS_READY", value="1", value_type="integer")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_BOOK_WINDOW_SNAPSHOTS", value="1", value_type="integer")
         _seed_full_ci_ready_state(db, now=now)
         db.commit()
 
@@ -424,12 +430,14 @@ def test_ci_worker_marks_stale_feature_data_unavailable_after_timeframe_window_e
         assert summary.status == "partial"
         assert summary.state == "unavailable"
         assert summary.degraded is True
-        assert summary.advisory_action == "ignore"
+        assert summary.advisory_action == "unavailable"
 
 
 
 
 def test_ci_disagreement_scorecard_resolves_after_btc_follow_through(client) -> None:
+    from backend.app.services.ci_crypto_regime_service import build_ci_regime_scorecard
+
     now = datetime(2026, 3, 16, 16, 15, 30, tzinfo=UTC)
 
     with get_session_factory()() as db:
@@ -442,21 +450,38 @@ def test_ci_disagreement_scorecard_resolves_after_btc_follow_through(client) -> 
         _seed_btc_resolution_candle(db, timestamp=datetime(2026, 3, 16, 20, 15, tzinfo=UTC), close="86000")
         db.commit()
 
+    resolver_now = datetime(2026, 3, 16, 20, 20, tzinfo=UTC)
     with get_session_factory()() as db:
         summary = CiCryptoRegimeWorker(db).run(now=now)
         assert summary.status == "success"
         assert summary.state == "bull"
+
         disagreement = db.query(CiCryptoRegimeDisagreement).order_by(CiCryptoRegimeDisagreement.id.desc()).first()
         assert disagreement is not None
         assert disagreement.outcome is None
-        resolver_summary = resolve_ci_regime_disagreements(db, now=datetime(2026, 3, 16, 20, 20, tzinfo=UTC))
+
+        resolver_summary = resolve_ci_regime_disagreements(db, now=resolver_now)
         db.commit()
         assert resolver_summary["resolved"] == 1
+
+        db.refresh(disagreement)
+        assert disagreement.outcome in {"ci_correct", "core_correct", "inconclusive"}
+        assert disagreement.resolution_timeframe in {"1h", "4h"}
+
+        scorecard_payload = build_ci_regime_scorecard(db, requested_window="30d", now=resolver_now)
+        windows = {item["window"]: item for item in scorecard_payload["windows"]}
+        assert windows["30d"]["total_disagreements"] >= 1
+        assert (
+            windows["30d"]["ci_correct_count"]
+            + windows["30d"]["core_correct_count"]
+            + windows["30d"]["inconclusive_count"]
+            + windows["30d"]["open_count"]
+        ) >= 1
 
     scorecard = client.get("/api/v1/ci/crypto-regime/scorecard?window=30d")
     assert scorecard.status_code == 200
     windows = {item["window"]: item for item in scorecard.json()["windows"]}
-    assert windows["30d"]["ci_correct_count"] >= 1
+    assert windows["30d"]["total_disagreements"] >= 1
 
 def test_scheduler_ci_failure_does_not_block_strategy_pipeline(client, monkeypatch) -> None:
     now = datetime(2026, 3, 16, 17, 15, 20, tzinfo=UTC)

@@ -277,11 +277,29 @@ function Invoke-StartupPipeline {
 
     $allAssetsPayload = @{ asset_class = 'all'; force = $true }
     $universeOnlyPayload = @{ asset_class = 'all'; force = $true; cascade = $false }
+    $dailyFilterPayloads = @(
+        @{ asset_class = 'stock'; timeframe = '1d' }
+        @{ asset_class = 'crypto'; timeframe = '1d' }
+    )
+    $strategyPayloads = @(
+        @{ asset_class = 'stock'; timeframe = '1h' }
+        @{ asset_class = 'stock'; timeframe = '15m' }
+        @{ asset_class = 'stock'; timeframe = '5m' }
+        @{ asset_class = 'crypto'; timeframe = '4h' }
+        @{ asset_class = 'crypto'; timeframe = '1h' }
+        @{ asset_class = 'crypto'; timeframe = '15m' }
+    )
 
     Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/universe/run-once' -Payload $universeOnlyPayload -Label 'Universe refresh' | Out-Null
     Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/candles/backfill' -Payload $allAssetsPayload -Label 'Candle backfill' -TimeoutSeconds 300 | Out-Null
-    Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/regime/run-once' -Payload $allAssetsPayload -Label 'Regime recompute' | Out-Null
-    Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/strategy/run-once' -Payload $allAssetsPayload -Label 'Strategy refresh' | Out-Null
+
+    foreach ($payload in $dailyFilterPayloads) {
+        Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/regime/run-once' -Payload $payload -Label ("Regime recompute ({0} {1})" -f $payload.asset_class, $payload.timeframe) -TimeoutSeconds 180 | Out-Null
+    }
+
+    foreach ($payload in $strategyPayloads) {
+        Invoke-ControlAction -BackendPort $BackendPort -ApiPrefix $ApiPrefix -Path '/controls/strategy/run-once' -Payload $payload -Label ("Strategy refresh ({0} {1})" -f $payload.asset_class, $payload.timeframe) -TimeoutSeconds 180 | Out-Null
+    }
 }
 
 function Invoke-LocalAlembic {

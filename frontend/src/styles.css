@@ -1359,10 +1359,6 @@ input[type='number'] {
   gap: 16px;
 }
 
-.command-card {
-  overflow: hidden;
-}
-
 .command-stack,
 .setting-input-stack {
   display: grid;
@@ -1736,8 +1732,10 @@ input[type='number'] {
   align-items: start;
 }
 
+.command-card,
 .ci-panel,
 .ci-runtime-card {
+  padding:20px;
   overflow: hidden;
 }
 
