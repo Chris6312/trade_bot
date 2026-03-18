@@ -336,6 +336,11 @@ def rebuild_execution_for_asset_class(
                     "route": asdict(route_target),
                     "risk_snapshot_id": risk_row.id,
                     "risk_decision_reason": risk_row.decision_reason,
+                    **(
+                        {"take_profit_price": str(request.take_profit_price)}
+                        if request.take_profit_price is not None
+                        else {}
+                    ),
                 },
             )
             db.add(order_record)
@@ -464,6 +469,14 @@ def _build_order_request(
     client_order_id: str,
 ) -> OrderRequest:
     side = "buy" if (risk_row.direction or "long").lower() != "short" else "sell"
+
+    # Prefer the dedicated column added by the AI research pipeline; fall back
+    # to the payload key written by risk_service when it copies the AI pick.
+    take_profit_price = parse_optional_decimal(risk_row.take_profit_price)
+    if take_profit_price is None:
+        payload = risk_row.payload or {}
+        take_profit_price = parse_optional_decimal(payload.get("ai_take_profit_primary"))
+
     return OrderRequest(
         symbol=risk_row.symbol,
         side=side,
@@ -472,6 +485,7 @@ def _build_order_request(
         notional=None,
         limit_price=None,
         stop_price=parse_optional_decimal(risk_row.stop_price),
+        take_profit_price=take_profit_price,
         time_in_force=runtime_settings.execution_time_in_force,
         client_order_id=client_order_id,
     )

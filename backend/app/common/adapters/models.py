@@ -73,6 +73,7 @@ class OrderRequest:
     notional: Decimal | None = None
     limit_price: Decimal | None = None
     stop_price: Decimal | None = None
+    take_profit_price: Decimal | None = None
     time_in_force: str = "day"
     client_order_id: str | None = None
 

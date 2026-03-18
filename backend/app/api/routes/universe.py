@@ -9,9 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_db
-from backend.app.models.core import Candle, StrategySnapshot, UniverseRun
+from backend.app.core.config import get_settings
+from backend.app.models.core import AiResearchPick, Candle, StrategySnapshot, UniverseRun
 from backend.app.schemas.core import UniverseConstituentRead, UniverseRunRead
 from backend.app.services.universe_service import get_universe_run, trading_date_for_now
+from backend.app.workers.ai_research_worker import AiResearchWorker
+from backend.app.workers.universe_worker import UniverseWorker
 
 router = APIRouter(prefix="/universe", tags=["universe"])
 VALID_ASSET_CLASSES = {"stock", "crypto"}
@@ -24,6 +27,72 @@ UNIVERSE_STATS_LOOKBACK_DAYS = {
     "crypto": 4,
 }
 NY_TZ = ZoneInfo("America/New_York")
+
+
+@router.post("/stock/ai-research/trigger", status_code=200)
+def trigger_ai_research_scan(
+    db: Session = Depends(get_db),
+) -> dict:
+    """Force-run the premarket AI research scan immediately, bypassing the
+    08:40–09:00 ET time window guard.  Seeds ``ai_research_picks`` for today,
+    then re-resolves the stock universe from those picks.
+
+    Use this when:
+    - The bot started after 09:00 ET and the scan was skipped
+    - You want to refresh picks mid-day with updated market context
+    - Testing the AI research pipeline end-to-end
+    """
+    settings = get_settings()
+    now = datetime.now(UTC)
+    trade_date = trading_date_for_now(now)
+
+    # 1. Run the AI research scan (force=True bypasses time-window guard)
+    ai_worker = AiResearchWorker(db, settings=settings)
+    ai_summary = ai_worker.run_if_due(now=now, force=True)
+
+    if ai_summary.status == "failed":
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI research scan failed: {ai_summary.error}",
+        )
+
+    # 2. Re-resolve the stock universe from today's picks
+    universe_worker = UniverseWorker(db, settings=settings)
+    universe_summary = universe_worker.resolve_stock_universe(now=now, force=True)
+
+    # 3. Return a summary the UI can display
+    picks = (
+        db.query(AiResearchPick)
+        .filter(AiResearchPick.trade_date == trade_date.isoformat())
+        .order_by(AiResearchPick.is_bonus_pick.asc(), AiResearchPick.id.asc())
+        .all()
+    )
+
+    return {
+        "status": ai_summary.status,
+        "trade_date": ai_summary.trade_date,
+        "pick_count": ai_summary.pick_count,
+        "venue": ai_summary.venue,
+        "universe_source": universe_summary.source,
+        "universe_symbol_count": len(universe_summary.symbols),
+        "universe_symbols": list(universe_summary.symbols),
+        "picks": [
+            {
+                "symbol": p.symbol,
+                "catalyst": p.catalyst,
+                "approximate_price": float(p.approximate_price) if p.approximate_price else None,
+                "entry_zone_low": float(p.entry_zone_low) if p.entry_zone_low else None,
+                "entry_zone_high": float(p.entry_zone_high) if p.entry_zone_high else None,
+                "stop_loss": float(p.stop_loss) if p.stop_loss else None,
+                "take_profit_primary": float(p.take_profit_primary) if p.take_profit_primary else None,
+                "take_profit_stretch": float(p.take_profit_stretch) if p.take_profit_stretch else None,
+                "use_trail_stop": p.use_trail_stop,
+                "risk_reward_note": p.risk_reward_note,
+                "is_bonus_pick": p.is_bonus_pick,
+            }
+            for p in picks
+        ],
+    }
 
 
 @router.get("/{asset_class}/current", response_model=list[UniverseConstituentRead])

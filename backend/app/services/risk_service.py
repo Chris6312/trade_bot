@@ -36,6 +36,7 @@ class ComputedRiskRow:
     account_cash: float | None
     entry_price: float | None
     stop_price: float | None
+    take_profit_price: float | None
     stop_distance: float | None
     stop_distance_pct: float | None
     quantity: float | None
@@ -278,6 +279,7 @@ def rebuild_risk_snapshots_for_asset_class(
         existing.account_cash = row.account_cash
         existing.entry_price = row.entry_price
         existing.stop_price = row.stop_price
+        existing.take_profit_price = row.take_profit_price
         existing.stop_distance = row.stop_distance
         existing.stop_distance_pct = row.stop_distance_pct
         existing.quantity = row.quantity
@@ -416,6 +418,48 @@ def _evaluate_strategy_row(
     if stop_distance is None or stop_distance <= 0:
         blocked_reasons.append("stop_distance_unavailable")
 
+    # --- AI research hint injection ---
+    # When the universe was seeded by the premarket AI scan, each symbol
+    # carries SL/TP levels in the strategy_row payload (propagated from
+    # UniverseSymbolRecord.payload via feature/regime/strategy pipelines).
+    # Override ATR-derived stop with the AI-suggested level when valid;
+    # always capture take_profit_price so execution can submit bracket orders.
+    _strat_payload: dict[str, Any] = strategy_row.payload or {}
+    take_profit_price: float | None = None
+    _ai_sl = _float_or_none(_strat_payload.get("ai_stop_loss"))
+    _ai_tp = _float_or_none(_strat_payload.get("ai_take_profit_primary"))
+    if _ai_sl is not None and entry_price is not None and 0 < _ai_sl < entry_price:
+        # Replace ATR stop only when AI level is tighter or equal (safer).
+        _ai_stop_dist = entry_price - _ai_sl
+        _ai_stop_pct  = _ai_stop_dist / entry_price
+        if _ai_stop_pct <= 0.06:  # cap at 6 % — sanity guard
+            stop_price       = _ai_sl
+            stop_distance    = _ai_stop_dist
+            stop_distance_pct = _ai_stop_pct
+            payload["ai_stop_override"] = True
+    if _ai_tp is not None and entry_price is not None and _ai_tp > entry_price:
+        take_profit_price = _ai_tp
+        payload["ai_take_profit_primary"] = str(_ai_tp)
+    _ai_tp_stretch = _float_or_none(_strat_payload.get("ai_take_profit_stretch"))
+    if _ai_tp_stretch is not None:
+        payload["ai_take_profit_stretch"] = str(_ai_tp_stretch)
+    if _strat_payload.get("ai_use_trail_stop"):
+        payload["ai_use_trail_stop"] = True
+
+    # --- Fallback TP: ATR-derived 2:1 reward when no AI pick exists ---
+    # When the universe came from the screener fallback, there is no AI
+    # take-profit level.  Synthesise one at 2× the stop distance so the
+    # execution layer can still submit a bracket order and the stop_worker
+    # has a clear exit target.  Only applied when:
+    #   - take_profit_price is still None (AI didn't provide one)
+    #   - stop_distance is valid (ATR-derived stop succeeded)
+    #   - entry_price is known
+    _FALLBACK_RR = 2.0  # reward-to-risk ratio for fallback universe
+    if take_profit_price is None and stop_distance and entry_price:
+        take_profit_price = round(entry_price + _FALLBACK_RR * stop_distance, 8)
+        payload["fallback_take_profit"] = str(take_profit_price)
+        payload["fallback_rr_ratio"] = _FALLBACK_RR
+
     requested_risk_pct = min(max(config.default_risk_pct, 0.0), config.max_risk_pct)
     effective_risk_pct = requested_risk_pct
     if account_context.soft_breaker_active:
@@ -514,6 +558,7 @@ def _evaluate_strategy_row(
             source=source,
             entry_price=entry_price,
             stop_price=stop_price,
+            take_profit_price=take_profit_price,
             stop_distance=stop_distance,
             stop_distance_pct=stop_distance_pct,
             requested_risk_pct=requested_risk_pct,
@@ -550,6 +595,7 @@ def _evaluate_strategy_row(
         account_cash=account_context.asset_cash if strategy_row.asset_class == "stock" else account_context.total_cash,
         entry_price=entry_price,
         stop_price=stop_price,
+        take_profit_price=take_profit_price,
         stop_distance=stop_distance,
         stop_distance_pct=stop_distance_pct,
         quantity=quantity,
@@ -584,6 +630,7 @@ def _build_blocked_row(
     source: str = RISK_SOURCE,
     entry_price: float | None = None,
     stop_price: float | None = None,
+    take_profit_price: float | None = None,
     stop_distance: float | None = None,
     stop_distance_pct: float | None = None,
     requested_risk_pct: float | None = None,
@@ -619,6 +666,7 @@ def _build_blocked_row(
         account_cash=account_context.asset_cash if strategy_row.asset_class == "stock" else account_context.total_cash,
         entry_price=entry_price,
         stop_price=stop_price,
+        take_profit_price=take_profit_price,
         stop_distance=stop_distance,
         stop_distance_pct=stop_distance_pct,
         quantity=quantity,

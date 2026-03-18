@@ -105,7 +105,7 @@ def test_scheduler_emits_skipped_event_when_due_slot_has_no_closed_bars(client, 
         assert event is not None
         assert event.payload["asset_class"] == "crypto"
         assert event.payload["timeframe"] == "15m"
-        assert event.payload["close_at"] == "2026-03-15T17:00:00+00:00"
+        assert event.payload["close_at"] == "2026-03-15T13:00:00-04:00"
         assert event.payload["skipped_reason"] == "no_closed_bars_persisted"
 
 
@@ -329,6 +329,13 @@ def test_scheduler_daily_stock_universe_refresh_backfills_and_runs_strategy(clie
         if asset_class == "stock"
         else [],
     )
+    class _NoOpAiResearchWorker:
+        def __init__(self, db, *, settings): pass
+        def run_if_due(self, *, now, force=False):
+            from types import SimpleNamespace
+            return SimpleNamespace(status="skipped", trade_date="2026-03-16", pick_count=0, venue="alpaca", error=None)
+
+    monkeypatch.setattr("backend.app.workers.scheduler_worker.AiResearchWorker", _NoOpAiResearchWorker)
     monkeypatch.setattr("backend.app.workers.scheduler_worker.UniverseWorker", _UniverseWorker)
     monkeypatch.setattr("backend.app.workers.scheduler_worker.SingleCandleWorker", _BackfillCandleWorker)
     monkeypatch.setattr("backend.app.workers.scheduler_worker.FeatureWorker", _FeatureWorker)

@@ -3,8 +3,46 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field
+
+_ET = ZoneInfo("America/New_York")
+
+
+class BotBaseModel(BaseModel):
+    """Base for all API response schemas.  Serializes every ``datetime`` field
+    to an ISO-8601 string in US/Eastern time so the frontend always receives ET
+    regardless of how the value is stored internally (UTC).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:  # type: ignore[override]
+        data = super().model_dump(**kwargs)
+        if kwargs.get("mode") == "json":
+            return _convert_datetimes_to_et(data)  # type: ignore[return-value]
+        return data
+
+
+def _dt_to_et(value: Any) -> Any:
+    """Convert a datetime to an ET ISO-8601 string; pass non-datetime values through."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            from datetime import timezone as _tz
+            value = value.replace(tzinfo=_tz.utc)
+        return value.astimezone(_ET).isoformat()
+    return value
+
+
+def _convert_datetimes_to_et(data: Any) -> Any:
+    """Recursively convert all datetime values in a dict/list to ET strings."""
+    if isinstance(data, dict):
+        return {k: _convert_datetimes_to_et(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_convert_datetimes_to_et(item) for item in data]
+    return _dt_to_et(data)
+
 
 
 class SettingUpsert(BaseModel):
@@ -22,7 +60,7 @@ class SettingBatchUpsertRequest(BaseModel):
     items: list[SettingBatchUpsertItem] = Field(default_factory=list)
 
 
-class SettingRead(BaseModel):
+class SettingRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     key: str
@@ -33,7 +71,7 @@ class SettingRead(BaseModel):
     updated_at: datetime
 
 
-class CiCryptoRegimeModelRegistryRead(BaseModel):
+class CiCryptoRegimeModelRegistryRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -51,7 +89,7 @@ class CiCryptoRegimeModelRegistryRead(BaseModel):
     updated_at: datetime
 
 
-class CiCryptoRegimeRunRead(BaseModel):
+class CiCryptoRegimeRunRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -71,7 +109,7 @@ class CiCryptoRegimeRunRead(BaseModel):
     updated_at: datetime
 
 
-class CiCryptoRegimeFeatureSnapshotRead(BaseModel):
+class CiCryptoRegimeFeatureSnapshotRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -87,7 +125,7 @@ class CiCryptoRegimeFeatureSnapshotRead(BaseModel):
     updated_at: datetime
 
 
-class CiCryptoRegimeStateRead(BaseModel):
+class CiCryptoRegimeStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -109,7 +147,7 @@ class CiCryptoRegimeStateRead(BaseModel):
     updated_at: datetime
 
 
-class CiCryptoRegimeCurrentRead(BaseModel):
+class CiCryptoRegimeCurrentRead(BotBaseModel):
     enabled: bool
     advisory_only: bool
     as_of_at: datetime | None
@@ -165,7 +203,7 @@ class WorkflowStageCreate(BaseModel):
     completed_at: datetime | None = None
 
 
-class WorkflowStageRead(BaseModel):
+class WorkflowStageRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -177,7 +215,7 @@ class WorkflowStageRead(BaseModel):
     completed_at: datetime | None
 
 
-class WorkflowRunRead(BaseModel):
+class WorkflowRunRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -190,7 +228,7 @@ class WorkflowRunRead(BaseModel):
     stages: list[WorkflowStageRead] = Field(default_factory=list)
 
 
-class AccountSnapshotCreate(BaseModel):
+class AccountSnapshotCreate(BotBaseModel):
     account_scope: str
     venue: str
     mode: str
@@ -202,7 +240,7 @@ class AccountSnapshotCreate(BaseModel):
     as_of: datetime | None = None
 
 
-class AccountSnapshotRead(BaseModel):
+class AccountSnapshotRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -225,7 +263,7 @@ class SystemEventCreate(BaseModel):
     payload: dict[str, Any] | None = None
 
 
-class SystemEventRead(BaseModel):
+class SystemEventRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -237,7 +275,7 @@ class SystemEventRead(BaseModel):
     created_at: datetime
 
 
-class RegimeSnapshotRead(BaseModel):
+class RegimeSnapshotRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -262,7 +300,7 @@ class RegimeSnapshotRead(BaseModel):
     feature_lag_seconds: int = 0
 
 
-class RegimeSyncStateRead(BaseModel):
+class RegimeSyncStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     asset_class: str
@@ -281,7 +319,7 @@ class RegimeSyncStateRead(BaseModel):
     feature_lag_seconds: int = 0
 
 
-class StrategySnapshotRead(BaseModel):
+class StrategySnapshotRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -309,7 +347,7 @@ class StrategySnapshotRead(BaseModel):
     payload: dict[str, Any] | None
 
 
-class StrategySyncStateRead(BaseModel):
+class StrategySyncStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     asset_class: str
@@ -326,7 +364,7 @@ class StrategySyncStateRead(BaseModel):
     last_error: str | None
 
 
-class RiskSnapshotRead(BaseModel):
+class RiskSnapshotRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -369,7 +407,7 @@ class RiskSnapshotRead(BaseModel):
     payload: dict[str, Any] | None
 
 
-class RiskSyncStateRead(BaseModel):
+class RiskSyncStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     asset_class: str
@@ -386,7 +424,7 @@ class RiskSyncStateRead(BaseModel):
     last_error: str | None
 
 
-class ExecutionOrderRead(BaseModel):
+class ExecutionOrderRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -416,7 +454,7 @@ class ExecutionOrderRead(BaseModel):
     payload: dict[str, Any] | None
 
 
-class ExecutionFillRead(BaseModel):
+class ExecutionFillRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -436,7 +474,7 @@ class ExecutionFillRead(BaseModel):
     payload: dict[str, Any] | None
 
 
-class ExecutionSyncStateRead(BaseModel):
+class ExecutionSyncStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     asset_class: str
@@ -455,7 +493,7 @@ class ExecutionSyncStateRead(BaseModel):
     last_error: str | None
 
 
-class StopStateRead(BaseModel):
+class StopStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -495,7 +533,7 @@ class StopStateRead(BaseModel):
     payload: dict[str, Any] | None
 
 
-class StopUpdateHistoryRead(BaseModel):
+class StopUpdateHistoryRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -518,7 +556,7 @@ class StopUpdateHistoryRead(BaseModel):
     payload: dict[str, Any] | None
 
 
-class StopSyncStateRead(BaseModel):
+class StopSyncStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     asset_class: str
@@ -537,7 +575,7 @@ class StopSyncStateRead(BaseModel):
     last_error: str | None
 
 
-class PositionStateRead(BaseModel):
+class PositionStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -570,7 +608,7 @@ class PositionStateRead(BaseModel):
 
 
 
-class PostTradeReviewRead(BaseModel):
+class PostTradeReviewRead(BotBaseModel):
     asset_class: str
     symbol: str
     venue: str
@@ -593,7 +631,7 @@ class PostTradeReviewRead(BaseModel):
     position: PositionStateRead | None = None
     related_events: list[SystemEventRead] = Field(default_factory=list)
 
-class OpenOrderStateRead(BaseModel):
+class OpenOrderStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -621,7 +659,7 @@ class OpenOrderStateRead(BaseModel):
     payload: dict[str, Any] | None
 
 
-class ReconciliationMismatchRead(BaseModel):
+class ReconciliationMismatchRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -641,7 +679,7 @@ class ReconciliationMismatchRead(BaseModel):
     payload: dict[str, Any] | None
 
 
-class PositionSyncStateRead(BaseModel):
+class PositionSyncStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     asset_class: str
@@ -659,7 +697,7 @@ class PositionSyncStateRead(BaseModel):
     last_error: str | None
 
 
-class UniverseConstituentRead(BaseModel):
+class UniverseConstituentRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -673,7 +711,7 @@ class UniverseConstituentRead(BaseModel):
     payload: dict[str, Any] | None
 
 
-class UniverseRunRead(BaseModel):
+class UniverseRunRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
@@ -689,7 +727,7 @@ class UniverseRunRead(BaseModel):
     constituents: list[UniverseConstituentRead] = Field(default_factory=list)
 
 
-class CandleSyncStateRead(BaseModel):
+class CandleSyncStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     asset_class: str
@@ -702,7 +740,7 @@ class CandleSyncStateRead(BaseModel):
     last_error: str | None
 
 
-class CandleFreshnessRead(BaseModel):
+class CandleFreshnessRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     asset_class: str
@@ -714,7 +752,7 @@ class CandleFreshnessRead(BaseModel):
     fresh_through: datetime | None
 
 
-class FeatureSyncStateRead(BaseModel):
+class FeatureSyncStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     asset_class: str
@@ -734,7 +772,7 @@ class ValidationRequest(BaseModel):
     note: str | None = None
 
 
-class ValidationResultRead(BaseModel):
+class ValidationResultRead(BotBaseModel):
     validation_type: str
     asset_class: str | None = None
     status: str
@@ -751,7 +789,7 @@ class LiveRolloutChecklistItemRead(BaseModel):
     action_required: str | None = None
 
 
-class LiveRolloutChecklistRead(BaseModel):
+class LiveRolloutChecklistRead(BotBaseModel):
     generated_at: datetime
     overall_status: str
     default_mode: str
@@ -776,7 +814,7 @@ class FlattenRequest(BaseModel):
     note: str | None = None
 
 
-class ControlActionResponse(BaseModel):
+class ControlActionResponse(BotBaseModel):
     action: str
     status: str
     message: str
@@ -784,7 +822,7 @@ class ControlActionResponse(BaseModel):
     created_at: datetime
 
 
-class ControlSnapshotRead(BaseModel):
+class ControlSnapshotRead(BotBaseModel):
     kill_switch_enabled: bool
     default_mode: str
     stock_mode: str

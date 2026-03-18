@@ -126,13 +126,29 @@ class PublicTradingAdapter:
         )
         resolved_order_id = str(response.get("orderId") or order_id)
         status = str(response.get("status") or "submitted")
+
+        # Public.com does not support native bracket orders.  When the AI
+        # research scan provides a take-profit target we embed it in the
+        # augmented raw dict so the stop_worker can manage it after fill.
+        # The SL leg (stopPrice already in the entry order above) is handled
+        # the same way — stop_worker reads _sl_price and _tp_price from raw.
+        augmented_raw: dict[str, Any] = dict(response)
+        if request.take_profit_price is not None:
+            augmented_raw["_tp_price"] = str(request.take_profit_price)
+            logger.debug(
+                "public_order_tp_embedded",
+                extra={"symbol": request.symbol, "tp": str(request.take_profit_price)},
+            )
+        if request.stop_price is not None:
+            augmented_raw["_sl_price"] = str(request.stop_price)
+
         return OrderResult(
             venue="public",
             asset_class="stock",
             order_id=resolved_order_id,
             status=status,
             client_order_id=order_id,
-            raw=response,
+            raw=augmented_raw,
         )
 
     def _resolve_account_id(self) -> str:

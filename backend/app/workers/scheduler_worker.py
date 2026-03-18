@@ -13,7 +13,9 @@ from backend.app.core.config import Settings, get_settings
 from backend.app.db.session import get_session_factory
 from backend.app.services.operator_service import create_system_event
 from backend.app.services.universe_service import list_universe_symbols, trading_date_for_now
+from backend.app.common.adapters.utils import dt_to_et_str
 from backend.app.workers.candle_worker import SingleCandleWorker
+from backend.app.workers.ai_research_worker import AiResearchWorker
 from backend.app.workers.ci_crypto_regime_worker import CiCryptoRegimeWorker
 from backend.app.workers.ci_disagreement_resolver_worker import CiDisagreementResolverWorker
 from backend.app.workers.feature_worker import FeatureWorker
@@ -90,6 +92,7 @@ class SchedulerWorker:
         self._has_advisory_lock = False
         self._last_processed_close: dict[tuple[str, str], datetime] = {}
         self._last_daily_stock_universe_date = None
+        self._last_daily_ai_research_date = None
         self._ny_tz = ZoneInfo("America/New_York")
         self._loop_lock = threading.Lock()
 
@@ -156,9 +159,57 @@ class SchedulerWorker:
 
     def run_cycle(self, now: datetime | None = None) -> None:
         cycle_time = now or datetime.now(UTC)
+        self._run_ai_research_if_due(cycle_time)
         self._ensure_universe_ready(cycle_time)
         self._run_daily_stock_universe_if_due(cycle_time)
         self._run_incremental_pipelines_if_due(cycle_time)
+
+    def _run_ai_research_if_due(self, now: datetime) -> None:
+        """Fire the premarket AI research scan during the 08:40–09:00 ET window
+        on NYSE trading days.  Runs at most once per calendar date (guarded by
+        AiResearchWorker internally and by ``_last_daily_ai_research_date``
+        here to avoid redundant DB checks every poll cycle).
+        """
+        local_now = now.astimezone(self._ny_tz)
+        if local_now.weekday() >= 5:
+            return
+
+        trigger_date = local_now.date()
+        if self._last_daily_ai_research_date == trigger_date:
+            return
+
+        with self.session_factory() as db:
+            ai_worker = AiResearchWorker(db, settings=self.settings)
+            summary = ai_worker.run_if_due(now=now)
+
+            if summary.status == "executed":
+                self._last_daily_ai_research_date = trigger_date
+                self._emit_event(
+                    db,
+                    event_type="scheduler.ai_research_scan_executed",
+                    severity="info",
+                    message="Premarket AI research scan completed.",
+                    payload={
+                        "trade_date": summary.trade_date,
+                        "pick_count": summary.pick_count,
+                        "venue": summary.venue,
+                    },
+                    commit=True,
+                )
+            elif summary.status == "failed":
+                self._emit_event(
+                    db,
+                    event_type="scheduler.ai_research_scan_failed",
+                    severity="warning",
+                    message="Premarket AI research scan failed; will retry next cycle.",
+                    payload={
+                        "trade_date": summary.trade_date,
+                        "error": summary.error,
+                        "venue": summary.venue,
+                    },
+                    commit=True,
+                )
+            # status == "skipped" → normal, no event needed
 
     def _ensure_universe_ready(self, now: datetime) -> None:
         with self.session_factory() as db:
@@ -200,6 +251,27 @@ class SchedulerWorker:
             return
 
         with self.session_factory() as db:
+            # Ensure AI research has run for today before seeding the universe.
+            # force=True here because this path is already gated by the daily
+            # trigger check above — we deliberately want the scan to run even
+            # if it's past 09:00 ET (e.g. manual refresh, late bot start).
+            ai_worker = AiResearchWorker(db, settings=self.settings)
+            ai_summary = ai_worker.run_if_due(now=now, force=True)
+            if ai_summary.status == "executed":
+                self._last_daily_ai_research_date = trigger_date
+                self._emit_event(
+                    db,
+                    event_type="scheduler.ai_research_scan_executed",
+                    severity="info",
+                    message="Premarket AI research scan completed (universe refresh path).",
+                    payload={
+                        "trade_date": ai_summary.trade_date,
+                        "pick_count": ai_summary.pick_count,
+                        "venue": ai_summary.venue,
+                    },
+                    commit=True,
+                )
+
             universe_worker = UniverseWorker(db, settings=self.settings)
             stock_summary = universe_worker.resolve_stock_universe(now=now, force=True)
             payload = {
@@ -603,7 +675,7 @@ class SchedulerWorker:
                 payload={
                     "asset_class": summary.asset_class,
                     "timeframe": summary.timeframe,
-                    "close_at": summary.close_at.isoformat(),
+                    "close_at": dt_to_et_str(summary.close_at),
                     "pipeline_status": summary.pipeline_status,
                     "upserted_bars": summary.upserted_bars,
                     "evaluated_rows": summary.evaluated_rows,
@@ -647,7 +719,7 @@ class SchedulerWorker:
                     "timeframes": [
                         {
                             "timeframe": summary.timeframe,
-                            "close_at": summary.close_at.isoformat(),
+                            "close_at": dt_to_et_str(summary.close_at),
                             "pipeline_status": summary.pipeline_status,
                             "upserted_bars": summary.upserted_bars,
                             "evaluated_rows": summary.evaluated_rows,

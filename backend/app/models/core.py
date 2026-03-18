@@ -361,6 +361,7 @@ class RiskSnapshot(TimestampMixin, Base):
     account_cash: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     entry_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     stop_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    take_profit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     stop_distance: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     stop_distance_pct: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     quantity: Mapped[Decimal | None] = mapped_column(Numeric(28, 8), nullable=True)
@@ -908,3 +909,35 @@ class CiCryptoRegimeDisagreement(TimestampMixin, Base):
     notes: Mapped[str | None] = mapped_column(Text(), nullable=True)
 
     run: Mapped[CiCryptoRegimeRun] = relationship(back_populates="disagreements")
+
+
+class AiResearchPick(TimestampMixin, Base):
+    """Premarket AI research scan result for a single stock pick."""
+
+    __tablename__ = "ai_research_picks"
+    __table_args__ = (
+        UniqueConstraint(
+            "trade_date",
+            "symbol",
+            name="uq_ai_research_picks_date_symbol",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    trade_date: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
+    scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    catalyst: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    approximate_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    entry_zone_low: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    entry_zone_high: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    stop_loss: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    take_profit_primary: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    take_profit_stretch: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    use_trail_stop: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    position_size_dollars: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    risk_reward_note: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    is_bonus_pick: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    account_cash_at_scan: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    venue: Mapped[str] = mapped_column(String(50), nullable=False, default="alpaca")
+    raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

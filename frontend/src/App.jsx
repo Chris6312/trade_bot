@@ -108,6 +108,48 @@ const QUICK_SETTING_LABELS = {
   'controls.crypto.trading_enabled': 'Crypto trading',
 };
 
+const CI_ORDERBOOK_DIRECT_SYMBOLS = new Set(['XBTUSD', 'BTCUSD', 'BTC/USD', 'ETHUSD', 'ETH/USD']);
+
+function normalizeCiScopeSymbol(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+function isCiOrderbookDirectSymbol(row) {
+  if (!row) return false;
+  const candidates = [row.rawSymbol, row.marketSymbol, row.symbol];
+  return candidates.some((value) => CI_ORDERBOOK_DIRECT_SYMBOLS.has(normalizeCiScopeSymbol(value)));
+}
+
+function getCiOrderbookScopeMeta(row, ciRegime = null) {
+  const orderbookEnabled = ciRegime?.enabled && ciRegime?.orderbookStatus && ciRegime.orderbookStatus !== 'disabled';
+  if (!orderbookEnabled) {
+    return {
+      label: 'Order-book path disabled',
+      detail: 'CI still behaves as a market-wide advisory, but Kraken book enrichment is not contributing right now.',
+      tone: 'neutral',
+      direct: false,
+    };
+  }
+
+  if (isCiOrderbookDirectSymbol(row)) {
+    return {
+      label: 'Direct BTC/ETH book coverage',
+      detail: 'This pair is one of the two symbols with direct Kraken order-book snapshots in v1.',
+      tone: 'positive',
+      direct: true,
+    };
+  }
+
+  return {
+    label: 'BTC/ETH market proxy only',
+    detail: 'This row inherits market-wide CI context. It does not have its own symbol-level order-book feed in v1.',
+    tone: 'neutral',
+    direct: false,
+  };
+}
+
 function formatMoney(value) {
   if (value == null || Number.isNaN(Number(value))) return '—';
   return new Intl.NumberFormat('en-US', {
@@ -1129,7 +1171,7 @@ function StrategiesPage({ strategies, ciRegime, onOpen, loading }) {
         <article className="panel-glass table-panel">
           <PanelHeader
             title="Crypto strategies"
-            subtitle={loading ? 'Polling live signals…' : 'Live evaluation rows plus CI comparison'}
+            subtitle={loading ? 'Polling live signals…' : 'Live evaluation rows plus CI market-context comparison'}
             action={(
               <button
                 type="button"
@@ -1142,7 +1184,7 @@ function StrategiesPage({ strategies, ciRegime, onOpen, loading }) {
           />
           <SimpleTable
             className="compact-table strategy-table"
-            columns={['Symbol', 'Strategy / cadence', 'Readiness', 'Status', 'Core vs CI']}
+            columns={['Symbol', 'Strategy / cadence', 'Readiness', 'Status', 'Core vs CI context']}
             rows={crypto.map((row) => [
               <StrategySymbolCell row={row} />,
               <StrategyCadenceCell row={row} />,
@@ -1193,22 +1235,24 @@ function StrategyStatusCell({ row, ciRegime = null }) {
     <div className="strategy-cell strategy-status-cell">
       <StatusPill label={row.status} tone={toneFromText(row.status)} />
       <div className="strategy-meta">{row.statusDetail || 'Ready for drill-down'}</div>
-      {showCiAction ? <div className="strategy-meta">CI action: {titleCase(ciRegime.advisoryAction)}</div> : null}
+      {showCiAction ? <div className="strategy-meta">CI market action: {titleCase(ciRegime.advisoryAction)}</div> : null}
     </div>
   );
 }
 
 function StrategyRegimeCell({ row, ciRegime = null }) {
   const showCi = row.assetClass === 'Crypto' && ciRegime?.enabled;
+  const ciScope = showCi ? getCiOrderbookScopeMeta(row, ciRegime) : null;
   return (
     <div className="strategy-cell strategy-regime-cell">
       <div className="strategy-regime">Core {titleCase(row.regime)}</div>
       {showCi ? (
         <div className="strategy-meta-row strategy-meta-stack">
-          <span className="strategy-chip">CI {titleCase(ciRegime.state)}</span>
+          <span className="strategy-chip">CI market {titleCase(ciRegime.state)}</span>
           <span className={`strategy-meta ${ciRegime.degraded ? 'warning-text' : ''}`}>
             {titleCase(ciRegime.agreementWithCore)} · {formatRatioPct(ciRegime.confidence)}
           </span>
+          <span className="strategy-meta">{ciScope?.label}</span>
         </div>
       ) : null}
       <div className={`strategy-meta ${row.isEvaluationOverdue ? 'warning-text' : ''}`}>
@@ -1714,6 +1758,9 @@ function CiRuntimeCard({ ciRegime, variant = 'settings' }) {
   const subtitle = variant === 'activity'
     ? 'Worker status, model pinning, and degraded reasons'
     : 'Runtime status in the command deck. Toggle and tune via the CI Advisory settings section below.';
+  const orderbookScopeNote = current.enabled
+    ? 'Direct order-book coverage is limited to BTC/USD and ETH/USD. Other crypto rows should treat it as BTC/ETH market microstructure proxy context only.'
+    : 'Order-book scope notes appear here when the advisory worker is enabled.';
 
   return (
     <article className={`panel-soft command-card ci-runtime-card ${variant === 'activity' ? 'full-span' : ''}`.trim()}>
@@ -1728,7 +1775,13 @@ function CiRuntimeCard({ ciRegime, variant = 'settings' }) {
           <MiniStat label="Last run" value={formatCompactTime(current.lastRunCompletedAt)} tone="neutral" />
         </div>
         <div className="ci-feature-grid">
-          <CiFeatureBadgeRow label="Order book" status={current.orderbookStatus} ready={current.orderbookReady} used={current.lastRunUsedOrderbook} />
+          <CiFeatureBadgeRow
+            label="Order book coverage"
+            status={current.orderbookStatus}
+            ready={current.orderbookReady}
+            used={current.lastRunUsedOrderbook}
+            note={orderbookScopeNote}
+          />
           <CiFeatureBadgeRow label="DeFiLlama" status={current.defillamaStatus} ready={current.defillamaReady} used={current.lastRunUsedDefillama} />
           <CiFeatureBadgeRow label="Hurst" status={current.hurstStatus} ready={current.hurstReady} used={current.lastRunUsedHurst} />
         </div>
@@ -1750,12 +1803,13 @@ function CiRuntimeCard({ ciRegime, variant = 'settings' }) {
   );
 }
 
-function CiFeatureBadgeRow({ label, status, ready, used }) {
+function CiFeatureBadgeRow({ label, status, ready, used, note = '' }) {
   return (
     <div className="ci-feature-row">
       <div>
         <div className="setting-label">{label}</div>
         <div className="subtle">Status: {titleCase(status || 'disabled')}</div>
+        {note ? <div className="subtle">{note}</div> : null}
       </div>
       <div className="ci-chip-row right">
         <StatusPill label={ready ? 'Ready' : 'Not Ready'} tone={ready ? 'positive' : 'warning'} />
@@ -1800,12 +1854,13 @@ function Drawer({ drawer, onClose }) {
 
 function StrategyDetail({ item }) {
   const ciRegime = item.ciRegime;
+  const ciScope = ciRegime?.enabled ? getCiOrderbookScopeMeta(item, ciRegime) : null;
   return (
     <div className="detail-stack">
       <div className="pill-row">
         <StatusPill label={item.status} tone={toneFromText(item.status)} />
         <StatusPill label={item.regime} tone="neutral" />
-        {ciRegime?.enabled ? <StatusPill label={`CI ${ciRegime.state}`} tone={toneFromText(ciRegime.state)} /> : null}
+        {ciRegime?.enabled ? <StatusPill label={`CI market ${ciRegime.state}`} tone={toneFromText(ciRegime.state)} /> : null}
       </div>
       <DetailRow label="Display symbol" value={item.symbol} />
       <DetailRow label="Venue symbol" value={item.marketSymbol || item.rawSymbol || '—'} />
@@ -1821,10 +1876,12 @@ function StrategyDetail({ item }) {
       <DetailRow label="Previous signal attempts" value={item.previousSignalAttempts || 'None'} />
       {ciRegime?.enabled ? (
         <>
-          <DetailRow label="CI state" value={titleCase(ciRegime.state)} />
+          <DetailRow label="CI market state" value={titleCase(ciRegime.state)} />
           <DetailRow label="CI agreement with core" value={titleCase(ciRegime.agreementWithCore)} />
           <DetailRow label="CI advisory action" value={titleCase(ciRegime.advisoryAction)} />
           <DetailRow label="CI confidence" value={formatRatioPct(ciRegime.confidence)} />
+          <DetailRow label="CI order-book scope" value={ciScope?.label || '—'} />
+          <DetailRow label="CI scope note" value={ciScope?.detail || '—'} />
           <DetailRow label="CI degraded reasons" value={joinList(ciRegime.degradedReasons, 'None')} />
           <DetailRow label="CI reason codes" value={joinList(ciRegime.reasonCodes, 'None')} />
         </>

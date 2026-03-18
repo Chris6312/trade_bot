@@ -99,8 +99,20 @@ class AlpacaPaperTradingAdapterBase:
             payload["notional"] = str(request.notional)
         if request.limit_price is not None:
             payload["limit_price"] = str(request.limit_price)
-        if request.stop_price is not None:
+
+        # Bracket order: both TP and SL present → use Alpaca bracket class.
+        # SL-only → simple stop attached to entry, no bracket needed.
+        if request.take_profit_price is not None and request.stop_price is not None:
+            payload["order_class"] = "bracket"
+            payload["take_profit"] = {"limit_price": str(request.take_profit_price)}
+            payload["stop_loss"] = {"stop_price": str(request.stop_price)}
+        elif request.take_profit_price is not None:
+            # TP without SL: use oco (one-cancels-other) with only the profit leg.
+            payload["order_class"] = "oto"
+            payload["take_profit"] = {"limit_price": str(request.take_profit_price)}
+        elif request.stop_price is not None:
             payload["stop_price"] = str(request.stop_price)
+
         if request.client_order_id:
             payload["client_order_id"] = request.client_order_id
 

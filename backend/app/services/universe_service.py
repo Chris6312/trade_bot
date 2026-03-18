@@ -13,6 +13,33 @@ from backend.app.core.config import PROJECT_ROOT
 from backend.app.models.core import UniverseConstituent, UniverseRun
 
 ALLOWED_ETFS = {"SPY", "QQQ"}
+
+# ---------------------------------------------------------------------------
+# Fallback universe allowlist
+# ---------------------------------------------------------------------------
+# When the AI research scan fails, the screener fallback is constrained to
+# this curated set of the 25 most liquid, large-cap US equities.  Only
+# symbols on this list are admitted; screener ordering (by volume) still
+# determines rank within the list, so the most active names come first.
+# Update periodically as market-cap leaders change.
+FALLBACK_UNIVERSE_ALLOWLIST: frozenset[str] = frozenset({
+    # Mega-cap tech / AI
+    "NVDA", "AAPL", "MSFT", "GOOGL", "META", "AMZN", "TSLA",
+    # Semiconductors
+    "AMD", "AVGO", "QCOM",
+    # Financials
+    "JPM", "BAC", "GS", "V", "MA",
+    # Healthcare / Pharma
+    "UNH", "LLY", "JNJ",
+    # Energy / Industrials
+    "XOM", "CVX",
+    # Consumer / Media
+    "WMT", "COST", "NFLX",
+    # Allowed ETFs (broad market proxies)
+    "SPY", "QQQ",
+})
+
+FALLBACK_UNIVERSE_MAX_SIZE = 25
 CRYPTO_TOP_15 = (
     {"symbol": "XBTUSD", "display_symbol": "BTC/USD", "display_name": "Bitcoin", "base_asset": "BTC"},
     {"symbol": "ETHUSD", "display_symbol": "ETH/USD", "display_name": "Ethereum", "base_asset": "ETH"},
@@ -255,6 +282,16 @@ def normalize_stock_candidates(
             str(item.get("symbol") or ""),
         )
     )
+
+    # Fallback path: constrain to the curated allowlist and hard-cap at 25.
+    # This keeps the bot on highly liquid large-caps when the AI scan is
+    # unavailable, ensuring the ATR-based stop/TP logic has clean data.
+    if source == "fallback":
+        ordered_candidates = [
+            c for c in ordered_candidates
+            if str(c.get("symbol") or "").upper().strip() in FALLBACK_UNIVERSE_ALLOWLIST
+        ]
+        max_size = min(max_size, FALLBACK_UNIVERSE_MAX_SIZE)
 
     for candidate in ordered_candidates:
         symbol = str(candidate.get("symbol") or "").upper().strip()

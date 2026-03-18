@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -9,10 +10,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.app.core.config import Settings
 from backend.app.db.base import Base
-from backend.app.models.core import UniverseRun
+from backend.app.models.core import AiResearchPick, UniverseRun
 from backend.app.services import universe_service
 from backend.app.workers.universe_worker import UniverseWorker
 
+
+# ---------------------------------------------------------------------------
+# Fake adapters (unchanged — still needed for the fallback screener path)
+# ---------------------------------------------------------------------------
 
 class FakeScreenerAdapter:
     def __init__(self, rows: list[dict], assets: dict[str, dict]) -> None:
@@ -38,18 +43,52 @@ class FakeRegistry:
         return self._screener
 
 
-class FakeAIService:
-    def __init__(self, rankings: list[dict] | None = None, error: Exception | None = None) -> None:
-        self.rankings = rankings or []
-        self.error = error
-        self.calls = 0
+# ---------------------------------------------------------------------------
+# Helper: seed ai_research_picks rows directly
+# ---------------------------------------------------------------------------
 
-    def rank_candidates(self, candidates: list[dict]) -> list[dict]:
-        self.calls += 1
-        if self.error is not None:
-            raise self.error
-        return self.rankings
+def _seed_ai_picks(
+    db: Session,
+    *,
+    trade_date: str,
+    symbols: list[str],
+    scanned_at: datetime | None = None,
+    venue: str = "alpaca",
+    stop_loss_offset: float = 5.0,
+    take_profit_offset: float = 10.0,
+) -> list[AiResearchPick]:
+    """Insert AiResearchPick rows so resolve_stock_universe sees them."""
+    ts = scanned_at or datetime(2026, 3, 14, 13, 0, tzinfo=UTC)
+    picks = []
+    for rank, symbol in enumerate(symbols, start=1):
+        price = Decimal("100.00")
+        pick = AiResearchPick(
+            trade_date=trade_date,
+            scanned_at=ts,
+            symbol=symbol,
+            catalyst=f"{symbol} catalyst for {trade_date}",
+            approximate_price=price,
+            entry_zone_low=price - Decimal("1.00"),
+            entry_zone_high=price + Decimal("1.00"),
+            stop_loss=price - Decimal(str(stop_loss_offset)),
+            take_profit_primary=price + Decimal(str(take_profit_offset)),
+            take_profit_stretch=price + Decimal(str(take_profit_offset * 1.5)),
+            use_trail_stop=False,
+            position_size_dollars=Decimal("1000.00"),
+            risk_reward_note="2:1 setup",
+            is_bonus_pick=rank > len(symbols) - 2,
+            account_cash_at_scan=Decimal("25000.00"),
+            venue=venue,
+        )
+        db.add(pick)
+        picks.append(pick)
+    db.commit()
+    return picks
 
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def db_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Session:
@@ -76,95 +115,56 @@ def worker_settings() -> Settings:
     )
 
 
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
 def test_ai_first_stock_universe_resolution_persists_snapshot_and_order(
     db_session: Session,
     worker_settings: Settings,
 ) -> None:
-    screener = FakeScreenerAdapter(
-        rows=[
-            {"symbol": "AAPL", "volume": 1000},
-            {"symbol": "MSFT", "volume": 900},
-            {"symbol": "SPY", "volume": 800, "is_etf": True},
-        ],
-        assets={
-            "AAPL": {"symbol": "AAPL", "tradable": True, "status": "active", "class": "us_equity"},
-            "MSFT": {"symbol": "MSFT", "tradable": True, "status": "active", "class": "us_equity"},
-            "SPY": {"symbol": "SPY", "tradable": True, "status": "active", "class": "us_equity", "is_etf": True},
-        },
-    )
-    ai_service = FakeAIService(
-        rankings=[
-            {"symbol": "MSFT", "ai_rank_score": 0.99, "confidence": 0.8, "brief_reason": "strong liquidity"},
-            {"symbol": "AAPL", "ai_rank_score": 0.88, "confidence": 0.7, "brief_reason": "quality trend"},
-            {"symbol": "SPY", "ai_rank_score": 0.50, "confidence": 0.6, "brief_reason": "benchmark ETF"},
-        ]
-    )
-    worker = UniverseWorker(
-        db_session,
-        registry=FakeRegistry(screener),
-        settings=worker_settings,
-        ai_service=ai_service,
-    )
+    """When AI research picks exist for the trade date, universe is seeded from them."""
+    trade_date = "2026-03-14"
+    _seed_ai_picks(db_session, trade_date=trade_date, symbols=["MSFT", "AAPL", "SPY"])
+    screener = FakeScreenerAdapter(rows=[], assets={})  # not called on ai_research path
+    worker = UniverseWorker(db_session, registry=FakeRegistry(screener), settings=worker_settings)
 
     summary = worker.resolve_stock_universe(now=datetime(2026, 3, 14, 12, 45, tzinfo=UTC))
 
-    assert summary.source == "ai"
+    assert summary.source == "ai_research"
     assert summary.symbols == ("MSFT", "AAPL", "SPY")
     assert summary.snapshot_path is not None
     assert Path(summary.snapshot_path).exists()
     run = db_session.query(UniverseRun).filter(UniverseRun.asset_class == "stock").one()
-    assert run.source == "ai"
+    assert run.source == "ai_research"
     assert len(run.constituents) == 3
-    assert ai_service.calls == 1
+    # Screener was NOT called — AI research picks were used directly
+    assert screener.fetch_most_active_calls == 0
 
 
-def test_ai_run_marks_ranked_and_fill_rows_separately(db_session: Session, worker_settings: Settings) -> None:
-    screener = FakeScreenerAdapter(
-        rows=[
-            {"symbol": "AAPL", "volume": 1000},
-            {"symbol": "MSFT", "volume": 900},
-            {"symbol": "SPY", "volume": 800, "is_etf": True},
-        ],
-        assets={
-            "AAPL": {"symbol": "AAPL", "tradable": True, "status": "active", "class": "us_equity"},
-            "MSFT": {"symbol": "MSFT", "tradable": True, "status": "active", "class": "us_equity"},
-            "SPY": {"symbol": "SPY", "tradable": True, "status": "active", "class": "us_equity", "is_etf": True},
-        },
-    )
-    ai_service = FakeAIService(
-        rankings=[
-            {"symbol": "MSFT", "ai_rank_score": 0.99, "confidence": 0.8, "brief_reason": "strong liquidity"},
-            {"symbol": "AAPL", "ai_rank_score": 0.88, "confidence": 0.7, "brief_reason": "quality trend"},
-        ]
-    )
+def test_ai_research_picks_carry_sl_tp_in_payload(db_session: Session, worker_settings: Settings) -> None:
+    """AI SL/TP hints from the pick are stored in each constituent's payload."""
+    trade_date = "2026-03-14"
+    _seed_ai_picks(db_session, trade_date=trade_date, symbols=["NVDA", "AMD"])
     worker = UniverseWorker(
         db_session,
-        registry=FakeRegistry(screener),
+        registry=FakeRegistry(FakeScreenerAdapter([], {})),
         settings=worker_settings,
-        ai_service=ai_service,
     )
 
     summary = worker.resolve_stock_universe(now=datetime(2026, 3, 14, 12, 55, tzinfo=UTC), force=True)
 
-    assert summary.source == "ai"
     run = db_session.query(UniverseRun).filter(UniverseRun.asset_class == "stock").one()
-    constituents = {item.symbol: item for item in run.constituents}
-
-    assert constituents["MSFT"].source == "ai"
-    assert constituents["MSFT"].payload["ai_scored"] is True
-    assert constituents["MSFT"].payload["selection_source"] == "ai_ranked"
-    assert constituents["MSFT"].payload["ai_rank_score"] == 0.99
-    assert constituents["MSFT"].payload["confidence"] == 0.8
-
-    assert constituents["SPY"].source == "ai"
-    assert constituents["SPY"].payload["ai_scored"] is False
-    assert constituents["SPY"].payload["selection_source"] == "ai_fill"
-    assert "ai_rank_score" not in constituents["SPY"].payload
-    assert "confidence" not in constituents["SPY"].payload
-    assert constituents["SPY"].selection_reason == "Selected from fallback liquidity screen after AI returned a partial ranking."
+    nvda = next(c for c in run.constituents if c.symbol == "NVDA")
+    assert nvda.payload is not None
+    assert nvda.payload.get("ai_stop_loss") is not None
+    assert nvda.payload.get("ai_take_profit_primary") is not None
+    assert nvda.payload.get("ai_entry_zone_low") is not None
+    assert nvda.payload.get("ai_risk_reward_note") == "2:1 setup"
 
 
-def test_fallback_universe_used_when_ai_fails(db_session: Session, worker_settings: Settings) -> None:
+def test_fallback_universe_used_when_no_ai_picks(db_session: Session, worker_settings: Settings) -> None:
+    """When no AI research picks exist, the screener fallback is used."""
     screener = FakeScreenerAdapter(
         rows=[
             {"symbol": "AAPL", "volume": 1000},
@@ -177,20 +177,34 @@ def test_fallback_universe_used_when_ai_fails(db_session: Session, worker_settin
             "QQQ": {"symbol": "QQQ", "tradable": True, "status": "active", "class": "us_equity", "is_etf": True},
         },
     )
-    ai_service = FakeAIService(error=RuntimeError("provider_down"))
-    worker = UniverseWorker(
-        db_session,
-        registry=FakeRegistry(screener),
-        settings=worker_settings,
-        ai_service=ai_service,
-    )
+    # No AI picks seeded → fallback path
+    worker = UniverseWorker(db_session, registry=FakeRegistry(screener), settings=worker_settings)
 
     summary = worker.resolve_stock_universe(now=datetime(2026, 3, 14, 12, 50, tzinfo=UTC), force=True)
 
     assert summary.source == "fallback"
     assert summary.symbols == ("AAPL", "MSFT", "QQQ")
-    run = db_session.query(UniverseRun).filter(UniverseRun.asset_class == "stock").one()
-    assert "provider_down" in (run.last_error or "")
+    assert screener.fetch_most_active_calls == 1
+
+
+def test_fallback_used_when_ai_disabled(db_session: Session, worker_settings: Settings) -> None:
+    """When ai_enabled=False, always falls back to screener even if picks exist."""
+    trade_date = "2026-03-14"
+    _seed_ai_picks(db_session, trade_date=trade_date, symbols=["MSFT", "AAPL"])
+    settings = worker_settings.model_copy(update={"ai_enabled": False})
+    screener = FakeScreenerAdapter(
+        rows=[{"symbol": "AAPL", "volume": 1000}, {"symbol": "MSFT", "volume": 900}],
+        assets={
+            "AAPL": {"symbol": "AAPL", "tradable": True, "status": "active", "class": "us_equity"},
+            "MSFT": {"symbol": "MSFT", "tradable": True, "status": "active", "class": "us_equity"},
+        },
+    )
+    worker = UniverseWorker(db_session, registry=FakeRegistry(screener), settings=settings)
+
+    summary = worker.resolve_stock_universe(now=datetime(2026, 3, 14, 12, 50, tzinfo=UTC), force=True)
+
+    assert summary.source == "fallback"
+    assert screener.fetch_most_active_calls == 1
 
 
 def test_etf_filtering_excludes_all_except_spy_and_qqq(db_session: Session, worker_settings: Settings) -> None:
@@ -209,7 +223,7 @@ def test_etf_filtering_excludes_all_except_spy_and_qqq(db_session: Session, work
             "AAPL": {"symbol": "AAPL", "tradable": True, "status": "active", "class": "us_equity"},
         },
     )
-    worker = UniverseWorker(db_session, registry=FakeRegistry(screener), settings=settings, ai_service=FakeAIService())
+    worker = UniverseWorker(db_session, registry=FakeRegistry(screener), settings=settings)
 
     summary = worker.resolve_stock_universe(now=datetime(2026, 3, 14, 13, 0, tzinfo=UTC), force=True)
 
@@ -218,23 +232,18 @@ def test_etf_filtering_excludes_all_except_spy_and_qqq(db_session: Session, work
 
 
 def test_stock_universe_max_size_is_enforced(db_session: Session, worker_settings: Settings) -> None:
-    settings = worker_settings.model_copy(update={"ai_enabled": False, "stock_universe_max_size": 2})
-    screener = FakeScreenerAdapter(
-        rows=[
-            {"symbol": "AAPL", "volume": 4000},
-            {"symbol": "MSFT", "volume": 3000},
-            {"symbol": "NVDA", "volume": 2000},
-            {"symbol": "AMZN", "volume": 1000},
-        ],
-        assets={
-            symbol: {"symbol": symbol, "tradable": True, "status": "active", "class": "us_equity"}
-            for symbol in ("AAPL", "MSFT", "NVDA", "AMZN")
-        },
+    trade_date = "2026-03-14"
+    _seed_ai_picks(
+        db_session,
+        trade_date=trade_date,
+        symbols=["AAPL", "MSFT", "NVDA", "AMZN"],
     )
-    worker = UniverseWorker(db_session, registry=FakeRegistry(screener), settings=settings, ai_service=FakeAIService())
+    settings = worker_settings.model_copy(update={"stock_universe_max_size": 2})
+    worker = UniverseWorker(db_session, registry=FakeRegistry(FakeScreenerAdapter([], {})), settings=settings)
 
     summary = worker.resolve_stock_universe(now=datetime(2026, 3, 14, 13, 5, tzinfo=UTC), force=True)
 
+    assert len(summary.symbols) == 2
     assert summary.symbols == ("AAPL", "MSFT")
 
 
@@ -246,7 +255,6 @@ def test_hard_coded_kraken_top_15_crypto_universe_is_available_every_cycle(
         db_session,
         registry=FakeRegistry(FakeScreenerAdapter([], {})),
         settings=worker_settings,
-        ai_service=FakeAIService(),
     )
 
     summary = worker.resolve_crypto_universe(now=datetime(2026, 3, 14, 13, 10, tzinfo=UTC))
@@ -269,39 +277,24 @@ def test_downstream_waits_until_stock_universe_is_resolved(db_session: Session, 
         rows=[{"symbol": "AAPL", "volume": 1000}],
         assets={"AAPL": {"symbol": "AAPL", "tradable": True, "status": "active", "class": "us_equity"}},
     )
-    worker = UniverseWorker(db_session, registry=FakeRegistry(screener), settings=worker_settings, ai_service=FakeAIService())
+    worker = UniverseWorker(db_session, registry=FakeRegistry(screener), settings=worker_settings)
 
     with pytest.raises(RuntimeError, match="stock_universe_unresolved"):
         worker.require_stock_universe_ready(now=datetime(2026, 3, 14, 13, 15, tzinfo=UTC))
 
+    # Seed picks so resolve uses AI research path
+    _seed_ai_picks(db_session, trade_date="2026-03-14", symbols=["AAPL"])
     worker.resolve_stock_universe(now=datetime(2026, 3, 14, 13, 15, tzinfo=UTC), force=True)
 
     assert worker.require_stock_universe_ready(now=datetime(2026, 3, 14, 13, 16, tzinfo=UTC)) == ("AAPL",)
 
 
-def test_same_day_jsonl_snapshot_short_circuits_duplicate_ai_run(db_session: Session, worker_settings: Settings) -> None:
-    screener = FakeScreenerAdapter(
-        rows=[
-            {"symbol": "AAPL", "volume": 1000},
-            {"symbol": "MSFT", "volume": 900},
-        ],
-        assets={
-            "AAPL": {"symbol": "AAPL", "tradable": True, "status": "active", "class": "us_equity"},
-            "MSFT": {"symbol": "MSFT", "tradable": True, "status": "active", "class": "us_equity"},
-        },
-    )
-    ai_service = FakeAIService(
-        rankings=[
-            {"symbol": "MSFT", "ai_rank_score": 0.9, "confidence": 0.7, "brief_reason": "deep liquidity"},
-            {"symbol": "AAPL", "ai_rank_score": 0.8, "confidence": 0.7, "brief_reason": "broad participation"},
-        ]
-    )
-    worker = UniverseWorker(
-        db_session,
-        registry=FakeRegistry(screener),
-        settings=worker_settings,
-        ai_service=ai_service,
-    )
+def test_same_day_cache_short_circuits_duplicate_resolve(db_session: Session, worker_settings: Settings) -> None:
+    """Second call to resolve_stock_universe on same day returns cache without re-querying picks."""
+    trade_date = "2026-03-14"
+    _seed_ai_picks(db_session, trade_date=trade_date, symbols=["MSFT", "AAPL"])
+    screener = FakeScreenerAdapter(rows=[], assets={})
+    worker = UniverseWorker(db_session, registry=FakeRegistry(screener), settings=worker_settings)
 
     first = worker.resolve_stock_universe(now=datetime(2026, 3, 14, 13, 20, tzinfo=UTC))
     second = worker.resolve_stock_universe(now=datetime(2026, 3, 14, 13, 21, tzinfo=UTC))
@@ -310,5 +303,4 @@ def test_same_day_jsonl_snapshot_short_circuits_duplicate_ai_run(db_session: Ses
     assert second.symbols == first.symbols
     assert second.from_cache is True
     assert second.skipped_reason == "already_resolved_today"
-    assert ai_service.calls == 1
-    assert screener.fetch_most_active_calls == 1
+    assert screener.fetch_most_active_calls == 0

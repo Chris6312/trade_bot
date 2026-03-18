@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.app.common.adapters.models import OrderRequest, OrderResult
 from backend.app.core.config import Settings
 from backend.app.db.base import Base
-from backend.app.models.core import AccountSnapshot, Candle, FeatureSnapshot, RegimeSnapshot, RiskSnapshot, Setting, StrategySnapshot
+from backend.app.models.core import AccountSnapshot, AiResearchPick, Candle, FeatureSnapshot, RegimeSnapshot, RiskSnapshot, Setting, StrategySnapshot
 from backend.app.services import universe_service
 from backend.app.services.execution_service import get_execution_sync_state, list_current_execution_orders
 from backend.app.services.risk_service import list_current_risk_snapshots
@@ -100,26 +100,43 @@ def test_settings_batch_endpoint_persists_multiple_runtime_controls(client) -> N
 
 
 def test_stock_universe_uses_persisted_settings_without_restart(db_session: Session) -> None:
-    screener = FakeScreenerAdapter(
-        rows=[
-            {"symbol": "AAPL", "volume": 4000},
-            {"symbol": "MSFT", "volume": 3000},
-            {"symbol": "NVDA", "volume": 2000},
-        ],
-        assets={symbol: {"symbol": symbol, "tradable": True, "status": "active", "class": "us_equity"} for symbol in ("AAPL", "MSFT", "NVDA")},
-    )
-    ai_service = FakeAIService(rankings=[
-        {"symbol": "NVDA", "ai_rank_score": 0.99},
-        {"symbol": "MSFT", "ai_rank_score": 0.70},
-        {"symbol": "AAPL", "ai_rank_score": 0.60},
-    ])
+    """DB settings override constructor defaults at resolve time (no restart needed).
+
+    Constructor has ai_enabled=False + source=fallback.  DB settings flip both
+    to ai/enabled and cap max_size=2.  Seeded AI research picks prove the worker
+    reads DB settings live and routes to ai_research rather than the screener.
+    """
+    trade_date = "2026-03-14"
+    # Pre-seed AI research picks (NVDA, MSFT, AAPL — ordered by rank)
+    for rank, symbol in enumerate(["NVDA", "MSFT", "AAPL"], start=1):
+        db_session.add(AiResearchPick(
+            trade_date=trade_date,
+            scanned_at=datetime(2026, 3, 14, 13, 0, tzinfo=UTC),
+            symbol=symbol,
+            catalyst=f"{symbol} catalyst",
+            approximate_price=Decimal("100.00"),
+            stop_loss=Decimal("95.00"),
+            take_profit_primary=Decimal("110.00"),
+            use_trail_stop=False,
+            is_bonus_pick=False,
+            venue="alpaca",
+        ))
+    db_session.commit()
+
+    screener = FakeScreenerAdapter(rows=[], assets={})  # should not be called
+    # Worker constructed with ai_enabled=False, source=fallback — DB overrides both
     worker = UniverseWorker(
         db_session,
         registry=FakeRegistry(screener),
-        settings=Settings(stock_universe_source="fallback", stock_universe_max_size=5, ai_enabled=False, ai_run_once_daily=False),
-        ai_service=ai_service,
+        settings=Settings(
+            stock_universe_source="fallback",
+            stock_universe_max_size=5,
+            ai_enabled=False,
+            ai_run_once_daily=False,
+        ),
     )
 
+    # DB settings override constructor: enable AI + set source=ai + cap size=2
     db_session.add_all([
         Setting(key="stock_universe_source", value="ai", value_type="string"),
         Setting(key="stock_universe_max_size", value="2", value_type="int"),
@@ -130,9 +147,10 @@ def test_stock_universe_uses_persisted_settings_without_restart(db_session: Sess
 
     summary = worker.resolve_stock_universe(now=datetime(2026, 3, 14, 17, 0, tzinfo=UTC), force=True)
 
-    assert summary.source == "ai"
+    # DB overrides took effect: ai_research used, max_size=2 enforced
+    assert summary.source == "ai_research"
     assert summary.symbols == ("NVDA", "MSFT")
-    assert ai_service.calls == 1
+    # Screener was never called (no rows seeded, would raise if it tried)
 
 
 def test_strategy_toggle_setting_blocks_runtime_candidates(db_session: Session) -> None:

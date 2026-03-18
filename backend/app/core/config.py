@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     ai_api_url: str = "https://api.openai.com/v1"
     ai_api_key: str | None = None
     stock_universe_source: str = "ai"
-    stock_universe_max_size: int = 50
+    stock_universe_max_size: int = 25
 
     stock_default_backfill_bars: int = 500
     crypto_default_backfill_bars: int = 720

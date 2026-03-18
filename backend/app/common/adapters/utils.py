@@ -78,3 +78,25 @@ def alpaca_timeframe_value(timeframe: str) -> str:
         return mapping[timeframe]
     except KeyError as exc:
         raise AdapterParseError(f"Unsupported Alpaca timeframe: {timeframe}") from exc
+
+# ---------------------------------------------------------------------------
+# Timezone display helper
+# ---------------------------------------------------------------------------
+
+from zoneinfo import ZoneInfo as _ZoneInfo
+
+_ET_ZONE = _ZoneInfo("America/New_York")
+
+
+def dt_to_et_str(value: "datetime | None") -> str | None:  # noqa: F821
+    """Convert a UTC (or timezone-aware) datetime to an ET ISO-8601 string.
+
+    Returns ``None`` for None input.  Naive datetimes are assumed UTC.
+    Used in worker payload dicts and log lines so the log panel shows ET.
+    """
+    if value is None:
+        return None
+    from datetime import timezone
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(_ET_ZONE).isoformat()
