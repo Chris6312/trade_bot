@@ -111,6 +111,8 @@ class CiCryptoRegimeCurrentRead(BaseModel):
     as_of_at: datetime
     state: str
     confidence: Decimal
+    stale: bool = False
+    expires_at: datetime | None = None
     core_regime_state: str | None
     agreement_with_core: str
     advisory_action: str
@@ -133,6 +135,8 @@ class CiCryptoRegimeCurrentRead(BaseModel):
     hurst_status: str | None = None
     hurst_ready: bool = False
     degraded_reasons: list[str] = Field(default_factory=list)
+    stale_timeframes: list[str] = Field(default_factory=list)
+    fresh_until_by_timeframe: dict[str, datetime | None] = Field(default_factory=dict)
 
 
 class CiCryptoRegimeHistoryRead(BaseModel):
@@ -162,6 +166,8 @@ class CiCryptoRegimeRuntimeStatusRead(BaseModel):
     promote_to_runtime: bool
     run_interval_minutes: int
     stale_after_seconds: int
+    stale: bool = False
+    expires_at: datetime | None = None
     state: str | None = None
     confidence: Decimal | None = None
     agreement_with_core: str | None = None
@@ -182,3 +188,46 @@ class CiCryptoRegimeRuntimeStatusRead(BaseModel):
     hurst_status: str | None = None
     hurst_ready: bool = False
     degraded_reasons: list[str] = Field(default_factory=list)
+    stale_timeframes: list[str] = Field(default_factory=list)
+    fresh_until_by_timeframe: dict[str, datetime | None] = Field(default_factory=dict)
+
+
+class CiRegimeDisagreementRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    ci_run_id: int
+    as_of_at: datetime
+    ci_state: str
+    core_state: str
+    ci_advisory_action: str
+    btc_price_at_disagreement: Decimal | None
+    resolution_at: datetime | None
+    resolution_timeframe: str | None
+    outcome: str | None
+    outcome_basis: str | None
+    btc_price_at_resolution: Decimal | None
+    btc_return_pct: Decimal | None
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CiRegimeScorecardWindowRead(BaseModel):
+    window: str
+    total_disagreements: int
+    ci_correct_count: int
+    core_correct_count: int
+    inconclusive_count: int
+    open_count: int
+    ci_win_rate_pct: float
+    core_win_rate_pct: float
+    avg_btc_return_when_ci_correct: float | None = None
+    avg_btc_return_when_core_correct: float | None = None
+    most_common_disagreement_type: str | None = None
+
+
+class CiRegimeScorecardRead(BaseModel):
+    requested_window: str
+    windows: list[CiRegimeScorecardWindowRead] = Field(default_factory=list)
+    recent: list[CiRegimeDisagreementRead] = Field(default_factory=list)

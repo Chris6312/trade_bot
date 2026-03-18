@@ -9,6 +9,7 @@ from backend.app.crypto.data.defillama_enrichment import DefiLlamaMarketSnapshot
 from backend.app.core.config import Settings
 from backend.app.db.session import get_session_factory
 from backend.app.models.core import (
+    CiCryptoRegimeDisagreement,
     CiCryptoRegimeFeatureSnapshot,
     CiCryptoRegimeOrderbookSnapshot,
     CiCryptoRegimeRun,
@@ -21,6 +22,7 @@ from backend.app.models.core import (
     UniverseRun,
 )
 from backend.app.services.candle_service import CandleSyncSummary
+from backend.app.services.ci_crypto_regime_service import resolve_ci_regime_disagreements
 from backend.app.services.settings_service import upsert_setting
 from backend.app.workers.ci_crypto_regime_worker import CiCryptoRegimeWorker
 from backend.app.workers.scheduler_worker import SchedulerWorker
@@ -146,6 +148,27 @@ def _seed_hurst_candles(db, *, symbol: str, timeframe: str, end_at: datetime, ba
                 trade_count=100,
             )
         )
+
+
+
+def _seed_btc_resolution_candle(db, *, timestamp: datetime, close: str) -> None:
+    db.add(
+        Candle(
+            asset_class="crypto",
+            venue="kraken",
+            source="seed",
+            symbol="XBTUSD",
+            timeframe="15m",
+            timestamp=timestamp,
+            open=Decimal(close),
+            high=Decimal(close),
+            low=Decimal(close),
+            close=Decimal(close),
+            volume=Decimal("1000"),
+            vwap=Decimal(close),
+            trade_count=100,
+        )
+    )
 
 def _seed_full_ci_ready_state(db, *, now: datetime) -> None:
     _seed_crypto_universe(db, trade_date=now.date())
@@ -368,7 +391,7 @@ def test_ci_worker_falls_back_when_orderbook_is_unavailable(client) -> None:
         assert "ci_crypto_regime.run_degraded" in event_types
 
 
-def test_ci_worker_marks_stale_feature_data_unavailable(client) -> None:
+def test_ci_worker_keeps_hourly_inputs_fresh_until_next_expected_close_plus_buffer(client) -> None:
     now = datetime(2026, 3, 16, 16, 15, 30, tzinfo=UTC)
 
     with get_session_factory()() as db:
@@ -377,7 +400,25 @@ def test_ci_worker_marks_stale_feature_data_unavailable(client) -> None:
         _seed_full_ci_ready_state(db, now=now)
         db.commit()
 
-    stale_now = datetime(2026, 3, 16, 16, 30, 30, tzinfo=UTC)
+    within_window = datetime(2026, 3, 16, 16, 30, 30, tzinfo=UTC)
+    with get_session_factory()() as db:
+        summary = CiCryptoRegimeWorker(db).run(now=within_window)
+        assert summary.status == "success"
+        assert summary.state == "bull"
+        assert summary.degraded is False
+        assert summary.advisory_action == "allow"
+
+
+def test_ci_worker_marks_stale_feature_data_unavailable_after_timeframe_window_expires(client) -> None:
+    now = datetime(2026, 3, 16, 16, 15, 30, tzinfo=UTC)
+
+    with get_session_factory()() as db:
+        upsert_setting(db, key="CI_CRYPTO_REGIME_ENABLED", value="true", value_type="bool")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_USE_ORDERBOOK", value="false", value_type="bool")
+        _seed_full_ci_ready_state(db, now=now)
+        db.commit()
+
+    stale_now = datetime(2026, 3, 16, 17, 21, 0, tzinfo=UTC)
     with get_session_factory()() as db:
         summary = CiCryptoRegimeWorker(db).run(now=stale_now)
         assert summary.status == "partial"
@@ -385,6 +426,37 @@ def test_ci_worker_marks_stale_feature_data_unavailable(client) -> None:
         assert summary.degraded is True
         assert summary.advisory_action == "ignore"
 
+
+
+
+def test_ci_disagreement_scorecard_resolves_after_btc_follow_through(client) -> None:
+    now = datetime(2026, 3, 16, 16, 15, 30, tzinfo=UTC)
+
+    with get_session_factory()() as db:
+        upsert_setting(db, key="CI_CRYPTO_REGIME_ENABLED", value="true", value_type="bool")
+        upsert_setting(db, key="CI_CRYPTO_REGIME_USE_ORDERBOOK", value="false", value_type="bool")
+        _seed_full_ci_ready_state(db, now=now)
+        db.query(RegimeSnapshot).delete()
+        _seed_core_regime(db, regime="risk_off", computed_at=now.replace(minute=0, second=0, microsecond=0))
+        _seed_btc_resolution_candle(db, timestamp=datetime(2026, 3, 16, 16, 15, tzinfo=UTC), close="84000")
+        _seed_btc_resolution_candle(db, timestamp=datetime(2026, 3, 16, 20, 15, tzinfo=UTC), close="86000")
+        db.commit()
+
+    with get_session_factory()() as db:
+        summary = CiCryptoRegimeWorker(db).run(now=now)
+        assert summary.status == "success"
+        assert summary.state == "bull"
+        disagreement = db.query(CiCryptoRegimeDisagreement).order_by(CiCryptoRegimeDisagreement.id.desc()).first()
+        assert disagreement is not None
+        assert disagreement.outcome is None
+        resolver_summary = resolve_ci_regime_disagreements(db, now=datetime(2026, 3, 16, 20, 20, tzinfo=UTC))
+        db.commit()
+        assert resolver_summary["resolved"] == 1
+
+    scorecard = client.get("/api/v1/ci/crypto-regime/scorecard?window=30d")
+    assert scorecard.status_code == 200
+    windows = {item["window"]: item for item in scorecard.json()["windows"]}
+    assert windows["30d"]["ci_correct_count"] >= 1
 
 def test_scheduler_ci_failure_does_not_block_strategy_pipeline(client, monkeypatch) -> None:
     now = datetime(2026, 3, 16, 17, 15, 20, tzinfo=UTC)
@@ -505,3 +577,4 @@ def test_scheduler_ci_failure_does_not_block_strategy_pipeline(client, monkeypat
         assert pipeline_event.payload["ready_rows"] == 1
         assert failure_event is not None
         assert failure_event.payload["timeframe"] == "15m"
+        assert pipeline_event.id < failure_event.id

@@ -822,6 +822,11 @@ class CiCryptoRegimeRun(TimestampMixin, Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    disagreements: Mapped[list["CiCryptoRegimeDisagreement"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="CiCryptoRegimeDisagreement.id",
+    )
 
 
 class CiCryptoRegimeFeatureSnapshot(TimestampMixin, Base):
@@ -882,3 +887,24 @@ class CiCryptoRegimeState(TimestampMixin, Base):
     summary_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     run: Mapped[CiCryptoRegimeRun] = relationship(back_populates="state")
+
+
+class CiCryptoRegimeDisagreement(TimestampMixin, Base):
+    __tablename__ = "ci_regime_disagreements"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ci_run_id: Mapped[int] = mapped_column(ForeignKey("ci_crypto_regime_runs.id", ondelete="CASCADE"), unique=True, index=True)
+    as_of_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    ci_state: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    core_state: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
+    ci_advisory_action: Mapped[str] = mapped_column(String(20), nullable=False)
+    btc_price_at_disagreement: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    resolution_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    resolution_timeframe: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    outcome_basis: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    btc_price_at_resolution: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    btc_return_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 5), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text(), nullable=True)
+
+    run: Mapped[CiCryptoRegimeRun] = relationship(back_populates="disagreements")

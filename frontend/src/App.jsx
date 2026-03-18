@@ -58,7 +58,16 @@ const STRATEGY_SCOPE_OPTIONS = [
   { value: 'blocked', label: 'Blocked' },
 ];
 
+const UNIVERSE_SCOPE_OPTIONS = [
+  { value: 'all', label: 'All symbols' },
+  { value: 'eligible', label: 'Eligible' },
+  { value: 'near_ready', label: 'Near Ready' },
+  { value: 'blocked_by_regime', label: 'Blocked by Regime' },
+  { value: 'not_ready', label: 'Not Ready' },
+];
+
 const SCOPE_OPTIONS_BY_PAGE = {
+  universe: UNIVERSE_SCOPE_OPTIONS,
   strategies: STRATEGY_SCOPE_OPTIONS,
 };
 
@@ -71,6 +80,7 @@ const SETTINGS_GROUPS = [
   'Execution Controls',
   'Stop Management',
   'Notifications',
+  'CI Advisory',
   'UI / Admin',
 ];
 
@@ -114,6 +124,22 @@ function formatPct(value) {
   return `${sign}${numeric.toFixed(2)}%`;
 }
 
+function formatRatioPct(value) {
+  if (value == null || Number.isNaN(Number(value))) return '—';
+  const numeric = Number(value);
+  return formatPct(Math.abs(numeric) <= 1 ? numeric * 100 : numeric);
+}
+
+function joinList(items, fallback = '—') {
+  return Array.isArray(items) && items.length ? items.join(', ') : fallback;
+}
+
+function isCiRegimeLog(row) {
+  const component = String(row?.component || '').toLowerCase();
+  const action = String(row?.action || '').toLowerCase();
+  return component.includes('ci_crypto_regime') || action.startsWith('ci_crypto_regime.');
+}
+
 function formatNumber(value) {
   if (value == null || Number.isNaN(Number(value))) return '—';
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(Number(value));
@@ -145,6 +171,10 @@ function formatCompactTime(value) {
   } catch {
     return String(value);
   }
+}
+
+function getCiScorecardWindow(ciRegime, window = '30d') {
+  return ciRegime?.scorecard?.windows?.find((item) => item.window === window) || null;
 }
 
 function toneFromNumber(value) {
@@ -191,7 +221,16 @@ function buildSettingMap(settings) {
   }, {});
 }
 
+function universeScopeKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
 function normalizeBoolean(value) {
+
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value !== 0;
   return ['true', '1', 'yes', 'on', 'enabled'].includes(String(value).toLowerCase());
@@ -255,6 +294,7 @@ function App() {
     strategies: [],
     positions: [],
     logs: [],
+    ciRegime: null,
     settings: [],
     controlState: {},
     diagnostics: {},
@@ -272,6 +312,8 @@ function App() {
   const [reviewOpen, setReviewOpen] = useState(false);
   const importInputRef = useRef(null);
   const refreshInFlightRef = useRef(false);
+  const draftHydratedRef = useRef(false);
+  const preserveDraftOnRefreshRef = useRef(false);
 
   const refresh = useCallback(async ({ quiet = false } = {}) => {
     if (refreshInFlightRef.current) return;
@@ -280,8 +322,15 @@ function App() {
     setError('');
     try {
       const live = await loadLiveSnapshot();
+      const nextDraftSettings = buildSettingMap(live.settings);
       setSnapshot(live);
-      setDraftSettings(buildSettingMap(live.settings));
+      setDraftSettings((current) => {
+        if (!draftHydratedRef.current || !preserveDraftOnRefreshRef.current) {
+          draftHydratedRef.current = true;
+          return nextDraftSettings;
+        }
+        return current;
+      });
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'Failed to load live data.');
     } finally {
@@ -349,6 +398,12 @@ function App() {
     return changed;
   }, [draftSettings, snapshot.settings]);
 
+  const hasStagedSettings = Object.keys(changedSettings).length > 0;
+
+  useEffect(() => {
+    preserveDraftOnRefreshRef.current = hasStagedSettings;
+  }, [hasStagedSettings]);
+
   const pageActions = PAGE_ACTIONS[page] || PAGE_ACTIONS.dashboard;
 
   const settingsMap = useMemo(() => buildSettingMap(snapshot.settings), [snapshot.settings]);
@@ -356,7 +411,8 @@ function App() {
   const filteredUniverse = useMemo(() => {
     const search = query.trim().toLowerCase();
     const filterRows = (rows) => rows.filter((row) => {
-      const matchesScope = scope === 'all' || row.eligibility?.toLowerCase() === scope || String(row.symbol).toLowerCase().includes(scope);
+      const normalizedScope = universeScopeKey(row.eligibilityScope || row.eligibility);
+      const matchesScope = scope === 'all' || normalizedScope === scope;
       const matchesQuery = !search || String(row.symbol).toLowerCase().includes(search);
       return matchesScope && matchesQuery;
     });
@@ -395,7 +451,13 @@ function App() {
   const filteredLogs = useMemo(() => {
     const search = query.trim().toLowerCase();
     return (snapshot.logs || []).filter((row) => {
-      const queryMatch = !search || String(row.message).toLowerCase().includes(search) || String(row.action).toLowerCase().includes(search) || String(row.symbol).toLowerCase().includes(search);
+      const payloadText = row.payload ? JSON.stringify(row.payload).toLowerCase() : '';
+      const queryMatch = !search
+        || String(row.message).toLowerCase().includes(search)
+        || String(row.action).toLowerCase().includes(search)
+        || String(row.component).toLowerCase().includes(search)
+        || String(row.symbol).toLowerCase().includes(search)
+        || payloadText.includes(search);
       return queryMatch;
     });
   }, [query, snapshot.logs]);
@@ -515,6 +577,7 @@ function App() {
       await saveSettings(changedSettings, snapshot.settings);
       setNotice(`Saved ${Object.keys(changedSettings).length} setting${Object.keys(changedSettings).length === 1 ? '' : 's'}.`);
       setReviewOpen(false);
+      preserveDraftOnRefreshRef.current = false;
       await refresh({ quiet: true });
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Settings save failed.');
@@ -661,6 +724,8 @@ function App() {
   };
 
   const resetDraftSettings = () => {
+    preserveDraftOnRefreshRef.current = false;
+    draftHydratedRef.current = true;
     setDraftSettings(buildSettingMap(snapshot.settings));
     setReviewOpen(false);
   };
@@ -702,13 +767,13 @@ function App() {
           <UniversePage universe={filteredUniverse} onOpen={setDrawer} loading={loading} />
         )}
         {page === 'strategies' && (
-          <StrategiesPage strategies={filteredStrategies} onOpen={setDrawer} loading={loading} />
+          <StrategiesPage strategies={filteredStrategies} ciRegime={snapshot.ciRegime} onOpen={setDrawer} loading={loading} />
         )}
         {page === 'positions' && (
           <PositionsPage positions={filteredPositions} onOpen={setDrawer} loading={loading} />
         )}
         {page === 'activity' && (
-          <ActivityPage logs={filteredLogs} onOpen={setDrawer} loading={loading} />
+          <ActivityPage logs={filteredLogs} ciRegime={snapshot.ciRegime} onOpen={setDrawer} loading={loading} />
         )}
         {page === 'settings' && (
           <SettingsPage
@@ -721,6 +786,8 @@ function App() {
             setSettingsFilter={setSettingsFilter}
             settingsQuery={settingsQuery}
             setSettingsQuery={setSettingsQuery}
+            hasStagedSettings={hasStagedSettings}
+            autoRefresh={autoRefresh}
             onChange={updateDraftSetting}
             onReset={resetDraftSettings}
             onReview={() => setReviewOpen(true)}
@@ -1012,7 +1079,7 @@ function UniversePage({ universe, onOpen, loading }) {
   );
 }
 
-function StrategiesPage({ strategies, onOpen, loading }) {
+function StrategiesPage({ strategies, ciRegime, onOpen, loading }) {
   const [stockReadinessOrder, setStockReadinessOrder] = useState('desc');
   const [cryptoReadinessOrder, setCryptoReadinessOrder] = useState('desc');
   const stocks = sortStrategiesByReadiness(
@@ -1023,69 +1090,74 @@ function StrategiesPage({ strategies, onOpen, loading }) {
     strategies.filter((row) => row.assetClass === 'Crypto'),
     cryptoReadinessOrder,
   );
-  return (
-    <section className="page-grid two-column-grid">
-      <article className="panel-glass table-panel">
-        <PanelHeader
-          title="Stock strategies"
-          subtitle={loading ? 'Polling live signals…' : 'Live evaluation rows'}
-          action={(
-            <button
-              type="button"
-              className="action-button compact"
-              onClick={() => setStockReadinessOrder((current) => (current === 'desc' ? 'asc' : 'desc'))}
-            >
-              Readiness {stockReadinessOrder === 'desc' ? '↓' : '↑'}
-            </button>
-          )}
-        />
-        <SimpleTable
-          className="compact-table strategy-table"
-          columns={['Symbol', 'Strategy / cadence', 'Readiness', 'Status', 'Regime']}
-          rows={stocks.map((row) => [
-            <StrategySymbolCell row={row} />,
-            <StrategyCadenceCell row={row} />,
-            <StrategyScoreCell row={row} />,
-            <StrategyStatusCell row={row} />,
-            <StrategyRegimeCell row={row} />,
-          ])}
-          onRowClick={(index) => onOpen({ type: 'strategy', item: stocks[index] })}
-          emptyText="No stock strategy rows returned yet."
-        />
-      </article>
 
-      <article className="panel-glass table-panel">
-        <PanelHeader
-          title="Crypto strategies"
-          subtitle={loading ? 'Polling live signals…' : 'Live evaluation rows'}
-          action={(
-            <button
-              type="button"
-              className="action-button compact"
-              onClick={() => setCryptoReadinessOrder((current) => (current === 'desc' ? 'asc' : 'desc'))}
-            >
-              Readiness {cryptoReadinessOrder === 'desc' ? '↓' : '↑'}
-            </button>
-          )}
-        />
-        <SimpleTable
-          className="compact-table strategy-table"
-          columns={['Symbol', 'Strategy / cadence', 'Readiness', 'Status', 'Regime']}
-          rows={crypto.map((row) => [
-            <StrategySymbolCell row={row} />,
-            <StrategyCadenceCell row={row} />,
-            <StrategyScoreCell row={row} />,
-            <StrategyStatusCell row={row} />,
-            <StrategyRegimeCell row={row} />,
-          ])}
-          onRowClick={(index) => onOpen({ type: 'strategy', item: crypto[index] })}
-          emptyText="No crypto strategy rows returned yet."
-        />
-      </article>
+  return (
+    <section className="page-grid single-column-grid strategy-page-grid">
+      <CiComparisonPanel ciRegime={ciRegime} />
+      <CiScorecardPanel ciRegime={ciRegime} variant="strategies" />
+
+      <div className="two-column-grid strategy-two-column-grid">
+        <article className="panel-glass table-panel">
+          <PanelHeader
+            title="Stock strategies"
+            subtitle={loading ? 'Polling live signals…' : 'Live evaluation rows'}
+            action={(
+              <button
+                type="button"
+                className="action-button compact"
+                onClick={() => setStockReadinessOrder((current) => (current === 'desc' ? 'asc' : 'desc'))}
+              >
+                Readiness {stockReadinessOrder === 'desc' ? '↓' : '↑'}
+              </button>
+            )}
+          />
+          <SimpleTable
+            className="compact-table strategy-table"
+            columns={['Symbol', 'Strategy / cadence', 'Readiness', 'Status', 'Regime']}
+            rows={stocks.map((row) => [
+              <StrategySymbolCell row={row} />,
+              <StrategyCadenceCell row={row} />,
+              <StrategyScoreCell row={row} />,
+              <StrategyStatusCell row={row} />,
+              <StrategyRegimeCell row={row} ciRegime={ciRegime} />,
+            ])}
+            onRowClick={(index) => onOpen({ type: 'strategy', item: { ...stocks[index], ciRegime: null } })}
+            emptyText="No stock strategy rows returned yet."
+          />
+        </article>
+
+        <article className="panel-glass table-panel">
+          <PanelHeader
+            title="Crypto strategies"
+            subtitle={loading ? 'Polling live signals…' : 'Live evaluation rows plus CI comparison'}
+            action={(
+              <button
+                type="button"
+                className="action-button compact"
+                onClick={() => setCryptoReadinessOrder((current) => (current === 'desc' ? 'asc' : 'desc'))}
+              >
+                Readiness {cryptoReadinessOrder === 'desc' ? '↓' : '↑'}
+              </button>
+            )}
+          />
+          <SimpleTable
+            className="compact-table strategy-table"
+            columns={['Symbol', 'Strategy / cadence', 'Readiness', 'Status', 'Core vs CI']}
+            rows={crypto.map((row) => [
+              <StrategySymbolCell row={row} />,
+              <StrategyCadenceCell row={row} />,
+              <StrategyScoreCell row={row} />,
+              <StrategyStatusCell row={row} ciRegime={ciRegime} />,
+              <StrategyRegimeCell row={row} ciRegime={ciRegime} />,
+            ])}
+            onRowClick={(index) => onOpen({ type: 'strategy', item: { ...crypto[index], ciRegime } })}
+            emptyText="No crypto strategy rows returned yet."
+          />
+        </article>
+      </div>
     </section>
   );
 }
-
 
 function StrategySymbolCell({ row }) {
   return (
@@ -1115,19 +1187,30 @@ function StrategyScoreCell({ row }) {
   );
 }
 
-function StrategyStatusCell({ row }) {
+function StrategyStatusCell({ row, ciRegime = null }) {
+  const showCiAction = row.assetClass === 'Crypto' && ciRegime?.enabled && ciRegime.advisoryAction && !['ignore', 'unavailable'].includes(ciRegime.advisoryAction);
   return (
     <div className="strategy-cell strategy-status-cell">
       <StatusPill label={row.status} tone={toneFromText(row.status)} />
       <div className="strategy-meta">{row.statusDetail || 'Ready for drill-down'}</div>
+      {showCiAction ? <div className="strategy-meta">CI action: {titleCase(ciRegime.advisoryAction)}</div> : null}
     </div>
   );
 }
 
-function StrategyRegimeCell({ row }) {
+function StrategyRegimeCell({ row, ciRegime = null }) {
+  const showCi = row.assetClass === 'Crypto' && ciRegime?.enabled;
   return (
     <div className="strategy-cell strategy-regime-cell">
-      <div className="strategy-regime">{titleCase(row.regime)}</div>
+      <div className="strategy-regime">Core {titleCase(row.regime)}</div>
+      {showCi ? (
+        <div className="strategy-meta-row strategy-meta-stack">
+          <span className="strategy-chip">CI {titleCase(ciRegime.state)}</span>
+          <span className={`strategy-meta ${ciRegime.degraded ? 'warning-text' : ''}`}>
+            {titleCase(ciRegime.agreementWithCore)} · {formatRatioPct(ciRegime.confidence)}
+          </span>
+        </div>
+      ) : null}
       <div className={`strategy-meta ${row.isEvaluationOverdue ? 'warning-text' : ''}`}>
         Next {formatCompactTime(row.nextReevaluation)}
       </div>
@@ -1161,13 +1244,36 @@ function PositionsPage({ positions, onOpen, loading }) {
   );
 }
 
-function ActivityPage({ logs, onOpen, loading }) {
+function ActivityPage({ logs, ciRegime, onOpen, loading }) {
+  const ciLogs = logs.filter((row) => isCiRegimeLog(row));
+  const latestCiLogs = ciLogs.slice(0, 12);
+
   return (
-    <section className="page-grid single-column-grid">
+    <section className="page-grid single-column-grid activity-page-grid">
+      <CiRuntimeCard ciRegime={ciRegime} variant="activity" />
+      <CiScorecardPanel ciRegime={ciRegime} variant="activity" />
+
+      <article className="panel-soft table-panel full-span">
+        <PanelHeader title="CI advisory events" subtitle={loading ? 'Polling CI worker events…' : 'Advisory-only runtime trail with degraded-reason visibility'} />
+        <SimpleTable
+          className="compact-table activity-table"
+          columns={['Time', 'Level', 'Action', 'Status', 'Message']}
+          rows={latestCiLogs.map((row) => [
+            formatTime(row.timestamp),
+            <StatusPill label={row.level} tone={toneFromText(row.level)} />,
+            row.action,
+            row.status || '—',
+            row.message,
+          ])}
+          onRowClick={(index) => onOpen({ type: 'log', item: latestCiLogs[index] })}
+          emptyText="No CI advisory events returned yet."
+        />
+      </article>
+
       <article className="panel-glass table-panel full-span">
         <PanelHeader title="Activity log" subtitle={loading ? 'Polling system events…' : 'Frontend reflects backend event truth'} />
         <SimpleTable
-		  className="compact-table activity-table"
+          className="compact-table activity-table"
           columns={['Time', 'Level', 'Component', 'Action', 'Message']}
           rows={logs.map((row) => [
             formatTime(row.timestamp),
@@ -1194,6 +1300,8 @@ function SettingsPage({
   setSettingsFilter,
   settingsQuery,
   setSettingsQuery,
+  hasStagedSettings,
+  autoRefresh,
   onChange,
   onReset,
   onReview,
@@ -1257,6 +1365,15 @@ function SettingsPage({
         onQuickSettingChange={onQuickSettingChange}
         onRunControlAction={onRunControlAction}
       />
+
+      {hasStagedSettings ? (
+        <Banner
+          tone="warning"
+          text={autoRefresh
+            ? 'Unsaved settings are staged locally. Auto refresh will keep live status cards moving, but it will not overwrite your draft until you save or cancel.'
+            : 'Unsaved settings are staged locally until you save or cancel them.'}
+        />
+      ) : null}
 
       {renderRoutingBanner(allSettings, draftSettings)}
 
@@ -1354,6 +1471,8 @@ function SettingsCommandDeck({ snapshot, allSettings, busyAction, onQuickSetting
         </div>
       </article>
 
+      <CiRuntimeCard ciRegime={snapshot.ciRegime} variant="settings" />
+
       <article className="panel-soft command-card">
         <PanelHeader title="Safety controls" subtitle="Direct backend control routes, confirmations included" />
         <div className="command-stack">
@@ -1443,7 +1562,7 @@ function SettingRow({ setting, value, dirty, onChange, onRestoreDefault }) {
               <input id={inputId} type="checkbox" checked={normalizeBoolean(value)} onChange={(event) => onChange(setting.key, event.target.checked)} />
               <span>{normalizeBoolean(value) ? 'Enabled' : 'Disabled'}</span>
             </label>
-          ) : setting.type === 'mode' ? (
+          ) : setting.type === 'mode' || setting.type === 'select' ? (
             <select id={inputId} value={value ?? ''} onChange={(event) => onChange(setting.key, event.target.value)}>
               {setting.options.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
@@ -1511,6 +1630,141 @@ function renderRoutingBanner(settings, draftSettings) {
   );
 }
 
+function CiComparisonPanel({ ciRegime }) {
+  const scorecard30d = getCiScorecardWindow(ciRegime, '30d');
+  if (!ciRegime?.enabled) {
+    return (
+      <article className="panel-soft ci-panel ci-disabled-panel">
+        <PanelHeader title="CI crypto advisory" subtitle="Advisory add-on is currently disabled" />
+        <div className="subtle">Core crypto regime remains the only execution truth. Enable the CI advisory section in Settings when you want comparison visibility.</div>
+      </article>
+    );
+  }
+
+  return (
+    <article className="panel-soft ci-panel">
+      <PanelHeader title="CI crypto advisory vs core regime" subtitle="Comparison is read-only and cannot overwrite runtime truth" />
+      <div className="ci-summary-grid">
+        <MiniStat label="Core regime" value={titleCase(ciRegime.coreRegimeState)} tone={toneFromText(ciRegime.coreRegimeState)} />
+        <MiniStat label="CI regime" value={titleCase(ciRegime.state)} tone={toneFromText(ciRegime.state)} />
+        <MiniStat label="Agreement" value={titleCase(ciRegime.agreementWithCore)} tone={toneFromText(ciRegime.agreementWithCore)} />
+        <MiniStat label="Confidence" value={formatRatioPct(ciRegime.confidence)} tone={ciRegime.degraded ? 'warning' : 'positive'} />
+        <MiniStat label="Advisory action" value={titleCase(ciRegime.advisoryAction)} tone={toneFromText(ciRegime.advisoryAction)} />
+        <MiniStat label="Last run" value={formatCompactTime(ciRegime.lastRunCompletedAt)} tone="neutral" />
+      </div>
+      <div className="ci-chip-row">
+        <StatusPill label={`Model ${ciRegime.modelVersion}`} tone="neutral" />
+        <StatusPill label={`Mode ${ciRegime.mode}`} tone="neutral" />
+        <StatusPill label={ciRegime.degraded ? 'Degraded' : 'Healthy'} tone={ciRegime.degraded ? 'warning' : 'positive'} />
+        <StatusPill label={ciRegime.advisoryOnly ? 'Advisory Only' : 'Promotion Active'} tone={ciRegime.advisoryOnly ? 'positive' : 'danger'} />
+        {scorecard30d ? <StatusPill label={`CI 30d ${scorecard30d.ciCorrectCount}W / ${scorecard30d.coreCorrectCount}L / ${scorecard30d.inconclusiveCount}—`} tone="neutral" /> : null}
+      </div>
+      {ciRegime.degradedReasons.length ? <div className="subtle">Degraded reasons: {joinList(ciRegime.degradedReasons)}</div> : null}
+      {ciRegime.reasonCodes.length ? <div className="subtle">Reason codes: {joinList(ciRegime.reasonCodes)}</div> : null}
+      {ciRegime.history?.length ? (
+        <div className="ci-history-strip">
+          {ciRegime.history.slice(0, 6).map((row) => (
+            <div key={row.id || row.runId} className="ci-history-card">
+              <div className="eyebrow">{formatCompactTime(row.asOfAt)}</div>
+              <div className="ci-history-title">{titleCase(row.state)}</div>
+              <div className="subtle">{titleCase(row.agreementWithCore)} · {formatRatioPct(row.confidence)}</div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function CiScorecardPanel({ ciRegime, variant = 'strategies' }) {
+  if (!ciRegime?.enabled) return null;
+  const windows = ciRegime.scorecard?.windows || [];
+  const recent = ciRegime.scorecard?.recent || [];
+  return (
+    <article className={`panel-soft ci-panel ${variant === 'activity' ? 'full-span' : ''}`.trim()}>
+      <PanelHeader title="CI disagreement retrospective" subtitle="Deferred scorecard for runs where CI and core diverged" />
+      <div className="ci-scorecard-grid">
+        {windows.map((row) => (
+          <div key={row.window} className="ci-scorecard-card">
+            <div className="eyebrow">{row.window.toUpperCase()}</div>
+            <div className="ci-scorecard-title">{row.ciCorrectCount}W / {row.coreCorrectCount}L / {row.inconclusiveCount}—</div>
+            <div className="subtle">CI {formatPct(row.ciWinRatePct)} · Core {formatPct(row.coreWinRatePct)}</div>
+            <div className="subtle">Open: {row.openCount} · Total: {row.totalDisagreements}</div>
+            {row.mostCommonDisagreementType ? <div className="subtle">Most common: {titleCase(row.mostCommonDisagreementType)}</div> : null}
+          </div>
+        ))}
+      </div>
+      {recent.length ? (
+        <div className="ci-history-strip">
+          {recent.slice(0, 6).map((row) => (
+            <div key={row.id} className="ci-history-card">
+              <div className="eyebrow">{formatCompactTime(row.asOfAt)}</div>
+              <div className="ci-history-title">CI {titleCase(row.ciState)} vs Core {titleCase(row.coreState)}</div>
+              <div className="subtle">{row.outcome ? titleCase(row.outcome) : 'Open'} · {row.resolutionTimeframe || 'Awaiting resolution'}</div>
+            </div>
+          ))}
+        </div>
+      ) : <div className="subtle">No disagreement retrospectives resolved yet.</div>}
+    </article>
+  );
+}
+
+function CiRuntimeCard({ ciRegime, variant = 'settings' }) {
+  const current = ciRegime || {};
+  const subtitle = variant === 'activity'
+    ? 'Worker status, model pinning, and degraded reasons'
+    : 'Runtime status in the command deck. Toggle and tune via the CI Advisory settings section below.';
+
+  return (
+    <article className={`panel-soft command-card ci-runtime-card ${variant === 'activity' ? 'full-span' : ''}`.trim()}>
+      <PanelHeader title="CI advisory runtime" subtitle={subtitle} />
+      <div className="command-stack">
+        <div className="ci-summary-grid compact">
+          <MiniStat label="Enabled" value={current.enabled ? 'Yes' : 'No'} tone={current.enabled ? 'positive' : 'neutral'} />
+          <MiniStat label="State" value={titleCase(current.state || 'unavailable')} tone={toneFromText(current.state)} />
+          <MiniStat label="Agreement" value={titleCase(current.agreementWithCore || 'unavailable')} tone={toneFromText(current.agreementWithCore)} />
+          <MiniStat label="Confidence" value={formatRatioPct(current.confidence)} tone={current.degraded ? 'warning' : 'neutral'} />
+          <MiniStat label="Model" value={current.modelVersion || '—'} tone="neutral" />
+          <MiniStat label="Last run" value={formatCompactTime(current.lastRunCompletedAt)} tone="neutral" />
+        </div>
+        <div className="ci-feature-grid">
+          <CiFeatureBadgeRow label="Order book" status={current.orderbookStatus} ready={current.orderbookReady} used={current.lastRunUsedOrderbook} />
+          <CiFeatureBadgeRow label="DeFiLlama" status={current.defillamaStatus} ready={current.defillamaReady} used={current.lastRunUsedDefillama} />
+          <CiFeatureBadgeRow label="Hurst" status={current.hurstStatus} ready={current.hurstReady} used={current.lastRunUsedHurst} />
+        </div>
+        <div className="ci-chip-row">
+          <StatusPill label={current.advisoryOnly ? 'Advisory Only' : 'Promotion Active'} tone={current.advisoryOnly ? 'positive' : 'danger'} />
+          <StatusPill label={`Run every ${current.runIntervalMinutes ?? '—'}m`} tone="neutral" />
+          <StatusPill label={`Stale after ${current.staleAfterSeconds ?? '—'}s`} tone="neutral" />
+          <StatusPill label={current.stale ? 'Currently stale' : 'Fresh within window'} tone={current.stale ? 'warning' : 'positive'} />
+          <StatusPill label={current.promoteToRuntime ? 'Runtime promotion flagged' : 'Runtime promotion locked off'} tone={current.promoteToRuntime ? 'danger' : 'positive'} />
+        </div>
+        {current.degradedReasons?.length ? <div className="subtle">Degraded reasons: {joinList(current.degradedReasons)}</div> : null}
+        {current.staleTimeframes?.length ? <div className="subtle">Stale timeframes: {joinList(current.staleTimeframes)}</div> : null}
+        {current.expiresAt ? <div className="subtle">Fresh-until deadline: {formatCompactTime(current.expiresAt)}</div> : null}
+        {current.availableModels?.length ? (
+          <div className="subtle">Available models: {current.availableModels.map((item) => item.modelVersion).join(', ')}</div>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function CiFeatureBadgeRow({ label, status, ready, used }) {
+  return (
+    <div className="ci-feature-row">
+      <div>
+        <div className="setting-label">{label}</div>
+        <div className="subtle">Status: {titleCase(status || 'disabled')}</div>
+      </div>
+      <div className="ci-chip-row right">
+        <StatusPill label={ready ? 'Ready' : 'Not Ready'} tone={ready ? 'positive' : 'warning'} />
+        <StatusPill label={used ? 'Used' : 'Skipped'} tone={used ? 'violet' : 'neutral'} />
+      </div>
+    </div>
+  );
+}
+
 function Drawer({ drawer, onClose }) {
   if (!drawer) return null;
 
@@ -1545,11 +1799,13 @@ function Drawer({ drawer, onClose }) {
 }
 
 function StrategyDetail({ item }) {
+  const ciRegime = item.ciRegime;
   return (
     <div className="detail-stack">
       <div className="pill-row">
         <StatusPill label={item.status} tone={toneFromText(item.status)} />
         <StatusPill label={item.regime} tone="neutral" />
+        {ciRegime?.enabled ? <StatusPill label={`CI ${ciRegime.state}`} tone={toneFromText(ciRegime.state)} /> : null}
       </div>
       <DetailRow label="Display symbol" value={item.symbol} />
       <DetailRow label="Venue symbol" value={item.marketSymbol || item.rawSymbol || '—'} />
@@ -1563,6 +1819,16 @@ function StrategyDetail({ item }) {
       <DetailRow label="Regime requirement" value={item.regimeRequirement} />
       <DetailRow label="Next reevaluation" value={formatTime(item.nextReevaluation)} />
       <DetailRow label="Previous signal attempts" value={item.previousSignalAttempts || 'None'} />
+      {ciRegime?.enabled ? (
+        <>
+          <DetailRow label="CI state" value={titleCase(ciRegime.state)} />
+          <DetailRow label="CI agreement with core" value={titleCase(ciRegime.agreementWithCore)} />
+          <DetailRow label="CI advisory action" value={titleCase(ciRegime.advisoryAction)} />
+          <DetailRow label="CI confidence" value={formatRatioPct(ciRegime.confidence)} />
+          <DetailRow label="CI degraded reasons" value={joinList(ciRegime.degradedReasons, 'None')} />
+          <DetailRow label="CI reason codes" value={joinList(ciRegime.reasonCodes, 'None')} />
+        </>
+      ) : null}
       <DetailRow label="Why it did or did not qualify" value={item.explanation} />
     </div>
   );
@@ -1755,10 +2021,11 @@ function ReviewModal({ changes, busy, onCancel, onConfirm }) {
 
 function toneFromText(text) {
   const value = String(text || '').toLowerCase();
-  if (value.includes('ready') || value.includes('eligible') || value.includes('healthy') || value.includes('managed') || value.includes('enabled') || value.includes('info') || value.includes('ok')) return 'positive';
-  if (value.includes('warn') || value.includes('cooldown') || value.includes('near') || value.includes('neutral')) return 'warning';
-  if (value.includes('block') || value.includes('stale') || value.includes('error') || value.includes('danger') || value.includes('kill') || value.includes('halt') || value.includes('mismatch')) return 'danger';
-  if (value.includes('bull') || value.includes('active')) return 'violet';
+  if (value.includes('block') || value.includes('stale') || value.includes('error') || value.includes('danger') || value.includes('kill') || value.includes('halt') || value.includes('mismatch') || value.includes('promotion active')) return 'danger';
+  if (value.includes('degraded') || value.includes('disagree') || value.includes('risk off') || value.includes('risk_off')) return 'warning';
+  if (value.includes('not ready') || value.includes('warn') || value.includes('cooldown') || value.includes('near') || value.includes('neutral') || value.includes('watchlist')) return 'warning';
+  if (value.includes('ready') || value.includes('eligible') || value.includes('healthy') || value.includes('managed') || value.includes('enabled') || value.includes('info') || value.includes('ok') || value.includes('advisory only') || value.includes('agree')) return 'positive';
+  if (value.includes('bull') || value.includes('active') || value.includes('used')) return 'violet';
   return 'neutral';
 }
 

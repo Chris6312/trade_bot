@@ -1,5 +1,6 @@
 import {
   mergeAccountSnapshots,
+  normalizeCiRegime,
   normalizeLogs,
   normalizePerformance,
   normalizePositions,
@@ -114,6 +115,10 @@ export async function loadLiveSnapshot() {
     totalAccountRes,
     stockAccountRes,
     cryptoAccountRes,
+    ciCurrentRes,
+    ciHistoryRes,
+    ciModelsRes,
+    ciScorecardRes,
   ] = await Promise.all([
     firstHealthy(['/health', '/api/v1/health']),
     tryFetch('/settings'),
@@ -131,6 +136,10 @@ export async function loadLiveSnapshot() {
     tryFetch('/account-snapshots/latest/total'),
     tryFetch('/account-snapshots/latest/stock'),
     tryFetch('/account-snapshots/latest/crypto'),
+    tryFetch('/ci/crypto-regime/current'),
+    tryFetch('/ci/crypto-regime/history?limit=20'),
+    tryFetch('/ci/crypto-regime/models'),
+    tryFetch('/ci/crypto-regime/scorecard?window=30d'),
   ]);
 
   const mustHave = [healthRes, settingsRes, controlsRes, eventsRes];
@@ -145,6 +154,13 @@ export async function loadLiveSnapshot() {
   const strategies = normalizeStrategies(mergeOkData(stockStrategyResults), mergeOkData(cryptoStrategyResults));
   const positions = normalizePositions(mergeOkData(stockPositionResults), mergeOkData(cryptoPositionResults));
   const logs = normalizeLogs(eventsRes.data || []);
+  const ciRegime = normalizeCiRegime(
+    runtimeRes.data?.ci_crypto_regime || null,
+    ciCurrentRes.ok ? ciCurrentRes.data : null,
+    ciHistoryRes.ok ? (ciHistoryRes.data?.items || ciHistoryRes.data || []) : [],
+    ciModelsRes.ok ? ciModelsRes.data : null,
+    ciScorecardRes.ok ? ciScorecardRes.data : null,
+  );
   const riskRows = {
     stock: mergeOkData(stockRiskResults),
     crypto: mergeOkData(cryptoRiskResults),
@@ -180,6 +196,7 @@ export async function loadLiveSnapshot() {
     strategies,
     positions,
     logs,
+    ciRegime,
     settings,
     controlState: {
       killSwitchEnabled: Boolean(controlsRes.data?.kill_switch_enabled),
@@ -208,6 +225,10 @@ export async function loadLiveSnapshot() {
       totalAccount: totalAccountRes,
       stockAccount: stockAccountRes,
       cryptoAccount: cryptoAccountRes,
+      ciCurrent: ciCurrentRes,
+      ciHistory: ciHistoryRes,
+      ciModels: ciModelsRes,
+      ciScorecard: ciScorecardRes,
     },
   };
 }

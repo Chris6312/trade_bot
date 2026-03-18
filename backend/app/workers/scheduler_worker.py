@@ -15,6 +15,7 @@ from backend.app.services.operator_service import create_system_event
 from backend.app.services.universe_service import list_universe_symbols, trading_date_for_now
 from backend.app.workers.candle_worker import SingleCandleWorker
 from backend.app.workers.ci_crypto_regime_worker import CiCryptoRegimeWorker
+from backend.app.workers.ci_disagreement_resolver_worker import CiDisagreementResolverWorker
 from backend.app.workers.feature_worker import FeatureWorker
 from backend.app.workers.regime_worker import RegimeWorker
 from backend.app.workers.strategy_worker import StrategyWorker
@@ -246,6 +247,15 @@ class SchedulerWorker:
                 )
                 self._last_processed_close[key] = close_at
                 self._emit_pipeline_event(summary)
+                if (
+                    asset_class == "crypto"
+                    and timeframe == "15m"
+                    and summary.candle.status == "executed"
+                    and summary.feature.status == "executed"
+                    and summary.regime.status == "executed"
+                ):
+                    self._run_ci_crypto_regime_advisory(timeframe=timeframe, now=now)
+                    self._run_ci_disagreement_resolver(timeframe=timeframe, now=now)
 
     def _run_stock_post_universe_refresh_pipeline(self, *, now: datetime) -> list[ScheduledPipelineSummary]:
         with self.session_factory() as db:
@@ -537,9 +547,6 @@ class SchedulerWorker:
                     skipped_reason=regime_reason,
                 )
 
-            if asset_class == "crypto":
-                self._run_ci_crypto_regime_advisory(db=db, timeframe=timeframe, now=now)
-
             if asset_class == "stock":
                 strategy_timeframes = self.settings.stock_strategy_timeframe_list
                 build_strategy = strategy_worker.build_stock_candidates
@@ -669,20 +676,53 @@ class SchedulerWorker:
                 commit=True,
             )
 
-    def _run_ci_crypto_regime_advisory(self, *, db: Session, timeframe: str, now: datetime) -> None:
+    def _run_ci_crypto_regime_advisory(self, *, db: Session | None = None, timeframe: str, now: datetime) -> None:
+        session = db if isinstance(db, Session) else None
+        owns_session = session is None
+        if session is None:
+            session = self.session_factory()
         try:
-            worker = CiCryptoRegimeWorker(db, settings=self.settings)
+            worker = CiCryptoRegimeWorker(session, settings=self.settings)
             worker.run_if_due(timeframe=timeframe, now=now)
+            if owns_session:
+                session.commit()
         except Exception as exc:  # pragma: no cover
             logger.exception("scheduler_ci_crypto_regime_failed")
             self._emit_event(
-                db,
+                session,
                 event_type="scheduler.ci_crypto_regime_non_blocking_failure",
                 severity="warning",
                 message="CI crypto regime advisory worker failed, but the main pipeline continued.",
                 payload={"timeframe": timeframe, "error": f"{type(exc).__name__}: {exc}"},
                 commit=True,
             )
+        finally:
+            if owns_session:
+                session.close()
+
+    def _run_ci_disagreement_resolver(self, *, db: Session | None = None, timeframe: str, now: datetime) -> None:
+        session = db if isinstance(db, Session) else None
+        owns_session = session is None
+        if session is None:
+            session = self.session_factory()
+        try:
+            worker = CiDisagreementResolverWorker(session, settings=self.settings)
+            worker.run_if_due(timeframe=timeframe, now=now)
+            if owns_session:
+                session.commit()
+        except Exception as exc:  # pragma: no cover
+            logger.exception("scheduler_ci_disagreement_resolver_failed")
+            self._emit_event(
+                session,
+                event_type="scheduler.ci_disagreement_resolver_non_blocking_failure",
+                severity="warning",
+                message="CI disagreement resolver failed, but the main pipeline continued.",
+                payload={"timeframe": timeframe, "error": f"{type(exc).__name__}: {exc}"},
+                commit=True,
+            )
+        finally:
+            if owns_session:
+                session.close()
 
     def _resolve_due_close(self, *, asset_class: str, timeframe: str, now: datetime) -> datetime | None:
         with self.session_factory() as db:

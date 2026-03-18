@@ -6,6 +6,11 @@ const MODE_OPTIONS = [
 
 const YES_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled']);
 
+const CI_MODE_OPTIONS = [
+  { value: 'rules_only', label: 'Rules only' },
+  { value: 'gmm_only', label: 'GMM only' },
+  { value: 'hybrid_rules_plus_gmm', label: 'Hybrid rules + GMM' },
+];
 
 const KRAKEN_PAIR_DISPLAY_MAP = {
   XBTUSD: { displaySymbol: 'BTC/USD', displayName: 'Bitcoin' },
@@ -64,6 +69,21 @@ const DEFAULT_SETTINGS_CATALOG = [
   { key: 'stops.crypto.trailing_offset_pct', valueType: 'float', defaultValue: 0.01, description: 'Crypto trailing-stop offset percentage.' },
   { key: 'stops.crypto.step_trigger_pct', valueType: 'float', defaultValue: 0.025, description: 'Crypto step-stop trigger percentage.' },
   { key: 'stops.crypto.step_increment_pct', valueType: 'float', defaultValue: 0.0125, description: 'Crypto step-stop increment percentage.' },
+  { key: 'CI_CRYPTO_REGIME_ENABLED', valueType: 'bool', defaultValue: false, description: 'Enable the CI crypto regime advisory worker.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_ADVISORY_ONLY', valueType: 'bool', defaultValue: true, description: 'Keep CI advisory read-only and do not let it overwrite core regime truth.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_MODEL_VERSION', valueType: 'string', defaultValue: 'ci_rules_v1', description: 'Pinned CI model bundle used by the advisory worker.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_MODE', valueType: 'string', defaultValue: 'rules_only', description: 'CI inference mode for advisory runs.', category: 'CI Advisory', options: CI_MODE_OPTIONS },
+  { key: 'CI_CRYPTO_REGIME_USE_ORDERBOOK', valueType: 'bool', defaultValue: true, description: 'Allow Kraken order-book enrichment for the CI advisory worker.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_USE_DEFILLAMA', valueType: 'bool', defaultValue: false, description: 'Allow optional DeFiLlama enrichment for the CI advisory worker.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_USE_HURST', valueType: 'bool', defaultValue: true, description: 'Allow optional Hurst feature generation for the CI advisory worker.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_RUN_INTERVAL_MINUTES', valueType: 'int', defaultValue: 15, description: 'Target cadence in minutes for advisory runs.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_STALE_AFTER_SECONDS', valueType: 'int', defaultValue: 1200, description: 'Age threshold after which CI data is treated as stale.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_MIN_BARS_4H', valueType: 'int', defaultValue: 120, description: 'Minimum 4h bars required before CI inference may run.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_MIN_BARS_1H', valueType: 'int', defaultValue: 240, description: 'Minimum 1h bars required before CI inference may run.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS_READY', valueType: 'int', defaultValue: 8, description: 'Minimum Kraken order-book snapshots required before CI order-book enrichment may begin contributing.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_BOOK_WINDOW_SNAPSHOTS', valueType: 'int', defaultValue: 64, description: 'Preferred rolling Kraken order-book window used for fully normalized microstructure context.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_BOOK_RAW_RETENTION_DAYS', valueType: 'int', defaultValue: 14, description: 'Raw Kraken order-book snapshot retention in days for audit and rolling-feature support.', category: 'CI Advisory' },
+  { key: 'CI_CRYPTO_REGIME_DISAGREEMENT_RETURN_THRESHOLD_PCT', valueType: 'float', defaultValue: 1.5, description: 'BTC return threshold used to resolve CI disagreement retrospectives.', category: 'CI Advisory' },
 ];
 
 const SETTINGS_CATALOG_BY_KEY = new Map(DEFAULT_SETTINGS_CATALOG.map((item, index) => [item.key, { ...item, order: index }]));
@@ -228,6 +248,21 @@ export function formatSettingLabel(key) {
     'risk.crypto.soft_stop_pct': 'Crypto Soft Stop %',
     'risk.crypto.hard_stop_pct': 'Crypto Hard Stop %',
     'risk.total_account.hard_stop_pct': 'Total Account Hard Stop %',
+    'CI_CRYPTO_REGIME_ENABLED': 'CI Advisory Enabled',
+    'CI_CRYPTO_REGIME_ADVISORY_ONLY': 'CI Advisory Only',
+    'CI_CRYPTO_REGIME_MODEL_VERSION': 'CI Model Version',
+    'CI_CRYPTO_REGIME_MODE': 'CI Advisory Mode',
+    'CI_CRYPTO_REGIME_USE_ORDERBOOK': 'Use Kraken Order Book',
+    'CI_CRYPTO_REGIME_USE_DEFILLAMA': 'Use DeFiLlama',
+    'CI_CRYPTO_REGIME_USE_HURST': 'Use Hurst Features',
+    'CI_CRYPTO_REGIME_RUN_INTERVAL_MINUTES': 'CI Run Interval Minutes',
+    'CI_CRYPTO_REGIME_STALE_AFTER_SECONDS': 'CI Stale After Seconds',
+    'CI_CRYPTO_REGIME_MIN_BARS_4H': 'CI Minimum 4H Bars',
+    'CI_CRYPTO_REGIME_MIN_BARS_1H': 'CI Minimum 1H Bars',
+    'CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS_READY': 'CI Book Ready Snapshots',
+    'CI_CRYPTO_REGIME_BOOK_WINDOW_SNAPSHOTS': 'CI Book Window Snapshots',
+    'CI_CRYPTO_REGIME_BOOK_RAW_RETENTION_DAYS': 'CI Book Raw Retention Days',
+    'CI_CRYPTO_REGIME_DISAGREEMENT_RETURN_THRESHOLD_PCT': 'CI Disagreement Return Threshold %',
   };
 
   if (map[key]) return map[key];
@@ -242,6 +277,7 @@ export function inferCategory(key) {
   if (raw.startsWith('controls.') || raw.startsWith('execution.') || raw.includes('kraken') || raw.includes('public') || raw.includes('alpaca')) {
     return 'Broker / Account';
   }
+  if (raw.startsWith('ci_crypto_regime_')) return 'CI Advisory';
   if (raw.startsWith('strategy_enabled.') || raw.startsWith('strategy_') || raw.startsWith('strategy.')) return 'Strategy Controls';
   if (raw.includes('universe') || raw.startsWith('ai_')) return 'Universe Controls';
   if (raw.startsWith('stops.') || raw.startsWith('stop_') || raw.includes('.stop')) return 'Stop Management';
@@ -286,6 +322,8 @@ function resolveSyntheticSettingValue(key, runtimeDefaults, controlSnapshot, fal
 export function normalizeSettings(settings = [], runtimeSnapshot = null, controlSnapshot = null) {
   const runtimeDefaults = runtimeDefaultsFromSnapshot(runtimeSnapshot);
   const rowsByKey = new Map((Array.isArray(settings) ? settings : []).map((row) => [row.key, row]));
+  rowsByKey.delete('CI_CRYPTO_REGIME_PROMOTE_TO_RUNTIME');
+  rowsByKey.delete('CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS');
 
   for (const descriptor of DEFAULT_SETTINGS_CATALOG) {
     if (!rowsByKey.has(descriptor.key)) {
@@ -307,11 +345,17 @@ export function normalizeSettings(settings = [], runtimeSnapshot = null, control
       const key = row.key;
       const descriptor = SETTINGS_CATALOG_BY_KEY.get(key) || {};
       const valueType = row.value_type || descriptor.valueType || 'string';
-      const type = inferSettingInputType(key, valueType);
+      const inferredType = inferSettingInputType(key, valueType);
       const parsedValue = parseSettingValue(row.value, valueType);
       const defaultValue = Object.prototype.hasOwnProperty.call(descriptor, 'defaultValue')
         ? descriptor.defaultValue
         : (Object.prototype.hasOwnProperty.call(runtimeDefaults, key) ? runtimeDefaults[key] : null);
+      const options = Array.isArray(descriptor.options)
+        ? descriptor.options
+        : (inferredType === 'mode' ? MODE_OPTIONS : []);
+      const type = Array.isArray(descriptor.options) && descriptor.options.length && inferredType !== 'mode'
+        ? 'select'
+        : inferredType;
 
       return {
         key,
@@ -323,8 +367,8 @@ export function normalizeSettings(settings = [], runtimeSnapshot = null, control
         defaultValue,
         description: row.description || descriptor.description || '',
         lastChanged: row.updated_at || null,
-        dangerous: /kill_switch|\.mode$|default_mode|flatten|breaker|hard_stop|live/i.test(key),
-        options: type === 'mode' ? MODE_OPTIONS : [],
+        dangerous: /kill_switch|\.mode$|default_mode|flatten|breaker|hard_stop|live|promote_to_runtime/i.test(key),
+        options,
         raw: row,
         order: descriptor.order ?? Number.MAX_SAFE_INTEGER,
       };
@@ -358,6 +402,28 @@ function resolveDisplayMeta(row, assetClass) {
   };
 }
 
+function resolveUniverseEligibility(payload, blockReason, selectionReason) {
+  const explicit = String(payload.eligibility || '').trim();
+  if (explicit) return explicit;
+
+  const reasonText = String(blockReason || '').toLowerCase();
+  const readiness = toNumber(payload.readiness_score ?? payload.composite_score ?? payload.strategy_rank_score ?? payload.score);
+
+  if (reasonText.includes('regime_blocked')) return 'Blocked by Regime';
+  if (blockReason && readiness != null && readiness >= 0.65) return 'Near Ready';
+  if (blockReason) return 'Not Ready';
+  if (payload.last_price != null || selectionReason) return 'Eligible';
+  return 'Selected';
+}
+
+function eligibilityScopeKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
 function normalizeUniverseRows(rows, assetClass) {
   return rows
     .map((row, index) => {
@@ -366,8 +432,8 @@ function normalizeUniverseRows(rows, assetClass) {
       const blockedReasons = stringifyList(payload.blocked_reasons);
       const selectionReason = row.selection_reason || payload.selection_reason || '';
       const blockReason = payload.block_reason || blockedReasons || '';
-      const eligibility = payload.eligibility
-        || (blockReason ? 'Blocked' : (payload.last_price != null || selectionReason ? 'Eligible' : 'Selected'));
+      const eligibility = resolveUniverseEligibility(payload, blockReason, selectionReason);
+      const eligibilityScope = eligibilityScopeKey(eligibility);
       const rank = toNumber(row.rank) ?? index + 1;
 
       return {
@@ -387,6 +453,7 @@ function normalizeUniverseRows(rows, assetClass) {
         stabilityScore: toNumber(payload.stability_score ?? payload.stability),
         compositeScore: toNumber(payload.composite_score ?? payload.strategy_rank_score ?? payload.score),
         eligibility,
+        eligibilityScope,
         selectionReason,
         blockReason,
         raw: row,
@@ -555,6 +622,118 @@ export function normalizePerformance({ accountSnapshots = {}, positions = [], ri
 
 export function mergeAccountSnapshots(total = null, stock = null, crypto = null) {
   return { total, stock, crypto };
+}
+
+function normalizeStringList(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
+  if (value == null || value === '') return [];
+  return [String(value)];
+}
+
+export function normalizeCiRegime(runtimeStatus = null, currentStatus = null, historyPayload = null, modelPayload = null, scorecardPayload = null) {
+  const runtime = runtimeStatus && typeof runtimeStatus === 'object' ? runtimeStatus : {};
+  const current = currentStatus && typeof currentStatus === 'object' ? currentStatus : {};
+  const historyItems = Array.isArray(historyPayload)
+    ? historyPayload
+    : Array.isArray(historyPayload?.items)
+      ? historyPayload.items
+      : [];
+  const modelItems = Array.isArray(modelPayload?.items)
+    ? modelPayload.items
+    : Array.isArray(modelPayload)
+      ? modelPayload
+      : [];
+  const base = { ...runtime, ...current };
+  const state = base.state || (runtime.enabled ? 'unavailable' : 'disabled');
+  const scorecard = scorecardPayload && typeof scorecardPayload === 'object' ? scorecardPayload : {};
+
+  return {
+    enabled: normalizeBoolean(base.enabled ?? false),
+    advisoryOnly: normalizeBoolean(base.advisory_only ?? true),
+    modelVersion: String(base.model_version || '—'),
+    featureSetVersion: String(base.feature_set_version || '—'),
+    mode: String(base.mode || 'rules_only'),
+    promoteToRuntime: normalizeBoolean(base.promote_to_runtime ?? false),
+    runIntervalMinutes: toNumber(base.run_interval_minutes),
+    staleAfterSeconds: toNumber(base.stale_after_seconds),
+    state,
+    stale: normalizeBoolean(base.stale ?? false),
+    expiresAt: base.expires_at || null,
+    confidence: toNumber(base.confidence),
+    confidencePct: toPercent(base.confidence),
+    coreRegimeState: String(base.core_regime_state || '—'),
+    coreRegimeTimeframe: String(base.core_regime_timeframe || '—'),
+    agreementWithCore: String(base.agreement_with_core || 'unavailable'),
+    advisoryAction: String(base.advisory_action || 'ignore'),
+    degraded: normalizeBoolean(base.degraded ?? false),
+    reasonCodes: normalizeStringList(base.reason_codes),
+    degradedReasons: normalizeStringList(base.degraded_reasons),
+    summary: base.summary && typeof base.summary === 'object' ? base.summary : {},
+    lastRunStatus: String(base.last_run_status || '—'),
+    lastRunStartedAt: base.last_run_started_at || null,
+    lastRunCompletedAt: base.last_run_completed_at || null,
+    lastRunUsedOrderbook: normalizeBoolean(base.last_run_used_orderbook ?? false),
+    lastRunUsedDefillama: normalizeBoolean(base.last_run_used_defillama ?? false),
+    lastRunUsedHurst: normalizeBoolean(base.last_run_used_hurst ?? false),
+    orderbookStatus: String(base.orderbook_status || 'disabled'),
+    orderbookReady: normalizeBoolean(base.orderbook_ready ?? false),
+    defillamaStatus: String(base.defillama_status || 'disabled'),
+    defillamaReady: normalizeBoolean(base.defillama_ready ?? false),
+    hurstStatus: String(base.hurst_status || 'disabled'),
+    hurstReady: normalizeBoolean(base.hurst_ready ?? false),
+    staleTimeframes: normalizeStringList(base.stale_timeframes),
+    freshUntilByTimeframe: Object.fromEntries(Object.entries(base.fresh_until_by_timeframe || {}).map(([key, value]) => [key, value || null])),
+    activeModelVersion: modelPayload?.active_model_version || base.model_version || null,
+    availableModels: modelItems.map((item) => ({
+      modelVersion: item.model_version,
+      modelType: item.model_type,
+      featureSetVersion: item.feature_set_version,
+      isActive: normalizeBoolean(item.is_active),
+      trainingNotes: item.training_notes || '',
+    })),
+    scorecard: {
+      requestedWindow: String(scorecard.requested_window || '30d'),
+      windows: Array.isArray(scorecard.windows) ? scorecard.windows.map((item) => ({
+        window: String(item.window || '30d'),
+        totalDisagreements: Number(item.total_disagreements || 0),
+        ciCorrectCount: Number(item.ci_correct_count || 0),
+        coreCorrectCount: Number(item.core_correct_count || 0),
+        inconclusiveCount: Number(item.inconclusive_count || 0),
+        openCount: Number(item.open_count || 0),
+        ciWinRatePct: toNumber(item.ci_win_rate_pct) ?? 0,
+        coreWinRatePct: toNumber(item.core_win_rate_pct) ?? 0,
+        avgBtcReturnWhenCiCorrect: toNumber(item.avg_btc_return_when_ci_correct),
+        avgBtcReturnWhenCoreCorrect: toNumber(item.avg_btc_return_when_core_correct),
+        mostCommonDisagreementType: item.most_common_disagreement_type || null,
+      })) : [],
+      recent: Array.isArray(scorecard.recent) ? scorecard.recent.map((item) => ({
+        id: item.id,
+        ciRunId: item.ci_run_id,
+        asOfAt: item.as_of_at || null,
+        ciState: String(item.ci_state || 'unavailable'),
+        coreState: String(item.core_state || 'unavailable'),
+        advisoryAction: String(item.ci_advisory_action || 'ignore'),
+        outcome: item.outcome || null,
+        outcomeBasis: item.outcome_basis || null,
+        resolutionAt: item.resolution_at || null,
+        resolutionTimeframe: item.resolution_timeframe || null,
+        btcReturnPct: toNumber(item.btc_return_pct),
+      })) : [],
+    },
+    history: historyItems.map((item) => ({
+      id: item.id,
+      runId: item.run_id,
+      asOfAt: item.as_of_at || null,
+      state: String(item.state || 'unavailable'),
+      confidence: toNumber(item.confidence),
+      confidencePct: toPercent(item.confidence),
+      agreementWithCore: String(item.agreement_with_core || 'unavailable'),
+      advisoryAction: String(item.advisory_action || 'ignore'),
+      coreRegimeState: String(item.core_regime_state || '—'),
+      degraded: normalizeBoolean(item.degraded ?? false),
+      reasonCodes: normalizeStringList(item.reason_codes_json),
+    })),
+  };
 }
 
 export function stringifyList(value) {

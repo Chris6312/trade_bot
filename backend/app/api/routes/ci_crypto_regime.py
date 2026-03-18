@@ -16,10 +16,14 @@ from backend.app.schemas.ci_crypto_regime import (
     CiCryptoRegimeRunDetailRead,
     CiCryptoRegimeRunRead,
     CiCryptoRegimeStateRead,
+    CiRegimeDisagreementRead,
+    CiRegimeScorecardRead,
+    CiRegimeScorecardWindowRead,
 )
 from backend.app.services.ci_crypto_regime_service import (
     build_ci_crypto_regime_current_snapshot,
     build_ci_crypto_regime_run_detail,
+    build_ci_regime_scorecard,
     ensure_default_ci_model_registry,
     list_ci_crypto_regime_history,
     list_ci_crypto_regime_models,
@@ -57,6 +61,20 @@ def get_ci_crypto_regime_history(
     )
     return CiCryptoRegimeHistoryRead(items=[CiCryptoRegimeStateRead.model_validate(row) for row in rows])
 
+
+
+
+@router.get("/scorecard", response_model=CiRegimeScorecardRead)
+def get_ci_crypto_regime_scorecard(
+    window: str = Query(default="30d", pattern="^(7d|30d|90d)$"),
+    db: Session = Depends(get_db),
+) -> CiRegimeScorecardRead:
+    payload = build_ci_regime_scorecard(db, requested_window=window)
+    return CiRegimeScorecardRead(
+        requested_window=payload["requested_window"],
+        windows=[CiRegimeScorecardWindowRead.model_validate(item) for item in payload["windows"]],
+        recent=[CiRegimeDisagreementRead.model_validate(item) for item in payload["recent"]],
+    )
 
 @router.get("/runs/{run_id}", response_model=CiCryptoRegimeRunDetailRead)
 def get_ci_crypto_regime_run(

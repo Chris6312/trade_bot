@@ -15,6 +15,7 @@ from backend.app.core.config import get_settings
 from backend.app.crypto.data.defillama_enrichment import DefiLlamaMarketSnapshot, DefiLlamaMetricsAdapter
 from backend.app.crypto.data.kraken_orderbook import KrakenOrderBookAdapter
 from backend.app.models.core import (
+    CiCryptoRegimeDisagreement,
     CiCryptoRegimeFeatureSnapshot,
     CiCryptoRegimeModelRegistry,
     CiCryptoRegimeOrderbookSnapshot,
@@ -27,14 +28,14 @@ from backend.app.models.core import (
 from backend.app.services.candle_service import ensure_utc
 from backend.app.services.operator_service import create_system_event
 from backend.app.services.regime_service import get_latest_regime_snapshot
-from backend.app.services.settings_service import resolve_bool_setting, resolve_int_setting, resolve_str_setting
+from backend.app.services.settings_service import resolve_bool_setting, resolve_float_setting, resolve_int_setting, resolve_str_setting
 from backend.app.services.universe_service import list_universe_symbols, trading_date_for_now
 
 CI_FEATURE_SET_VERSION = "ci_crypto_regime_feature_set_v1"
 CI_DEFAULT_MODEL_VERSION = "ci_rules_v1"
 CI_EVENT_SOURCE = "ci_crypto_regime_worker"
 CI_ALLOWED_STATES = {"bull", "neutral", "risk_off", "unavailable"}
-CI_ALLOWED_ACTIONS = {"allow", "tighten", "block", "ignore"}
+CI_ALLOWED_ACTIONS = {"allow", "tighten", "ignore", "unavailable"}
 CI_ORDERBOOK_SYMBOLS = ("XBTUSD", "ETHUSD")
 CI_BASE_FEATURE_CONTRACT = (
     "btc_trend_4h",
@@ -76,6 +77,20 @@ CI_HURST_FEATURE_CONTRACT = (
     "eth_hurst_4h",
     "eth_hurst_1h",
 )
+CI_SCORECARD_WINDOWS = ("7d", "30d", "90d")
+CI_BOOK_READY_DEFAULT = 8
+CI_BOOK_WINDOW_DEFAULT = 64
+CI_BOOK_RAW_RETENTION_DAYS_DEFAULT = 14
+CI_FEATURE_RETENTION_DAYS = 30
+CI_RUN_RETENTION_DAYS = 90
+CI_DISAGREEMENT_RETURN_THRESHOLD_PCT_DEFAULT = 1.5
+
+CI_FRESHNESS_TIMEFRAME_WINDOWS = {
+    "15m": timedelta(minutes=15),
+    "1h": timedelta(hours=1),
+    "4h": timedelta(hours=4),
+    "1d": timedelta(days=1),
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -91,7 +106,10 @@ class CiCryptoRegimeSettings:
     stale_after_seconds: int
     min_bars_4h: int
     min_bars_1h: int
-    min_book_snapshots: int
+    min_book_snapshots_ready: int
+    book_window_snapshots: int
+    book_raw_retention_days: int
+    disagreement_return_threshold_pct: float
     promote_to_runtime: bool
 
 
@@ -142,8 +160,10 @@ class _OrderbookCollection:
     snapshots: list[_OrderbookSnapshotInput]
     status: str
     ready: bool
+    window_ready: bool
     used: bool
     degraded_reasons: list[str]
+    snapshot_counts: dict[str, int]
 
 
 @dataclass(slots=True, frozen=True)
@@ -166,7 +186,9 @@ class _InferenceInputs:
     orderbook_snapshots: list[_OrderbookSnapshotInput]
     orderbook_status: str
     orderbook_ready: bool
+    orderbook_window_ready: bool
     orderbook_used: bool
+    orderbook_snapshot_counts: dict[str, int]
     defillama_status: str
     defillama_ready: bool
     defillama_used: bool
@@ -175,8 +197,10 @@ class _InferenceInputs:
     hurst_used: bool
     degraded_reasons: list[str]
     stale: bool
+    stale_timeframes: list[str]
     newest_feature_at: datetime | None
     oldest_required_feature_at: datetime | None
+    newest_feature_at_by_timeframe: dict[str, datetime | None]
 
 
 @dataclass(slots=True, frozen=True)
@@ -207,7 +231,18 @@ def resolve_ci_crypto_regime_settings(db: Session) -> CiCryptoRegimeSettings:
         stale_after_seconds=resolve_int_setting(db, "CI_CRYPTO_REGIME_STALE_AFTER_SECONDS", default=1200),
         min_bars_4h=resolve_int_setting(db, "CI_CRYPTO_REGIME_MIN_BARS_4H", default=120),
         min_bars_1h=resolve_int_setting(db, "CI_CRYPTO_REGIME_MIN_BARS_1H", default=240),
-        min_book_snapshots=resolve_int_setting(db, "CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS", default=20),
+        min_book_snapshots_ready=resolve_int_setting(
+            db,
+            "CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS_READY",
+            default=resolve_int_setting(db, "CI_CRYPTO_REGIME_MIN_BOOK_SNAPSHOTS", default=CI_BOOK_READY_DEFAULT),
+        ),
+        book_window_snapshots=resolve_int_setting(db, "CI_CRYPTO_REGIME_BOOK_WINDOW_SNAPSHOTS", default=CI_BOOK_WINDOW_DEFAULT),
+        book_raw_retention_days=resolve_int_setting(db, "CI_CRYPTO_REGIME_BOOK_RAW_RETENTION_DAYS", default=CI_BOOK_RAW_RETENTION_DAYS_DEFAULT),
+        disagreement_return_threshold_pct=resolve_float_setting(
+            db,
+            "CI_CRYPTO_REGIME_DISAGREEMENT_RETURN_THRESHOLD_PCT",
+            default=CI_DISAGREEMENT_RETURN_THRESHOLD_PCT_DEFAULT,
+        ),
         promote_to_runtime=resolve_bool_setting(db, "CI_CRYPTO_REGIME_PROMOTE_TO_RUNTIME", default=False),
     )
 
@@ -306,6 +341,112 @@ def list_ci_crypto_regime_history(
     return query.order_by(CiCryptoRegimeState.as_of_at.desc(), CiCryptoRegimeState.id.desc()).limit(limit).all()
 
 
+def list_ci_regime_disagreements(db: Session, *, limit: int = 25) -> list[CiCryptoRegimeDisagreement]:
+    return (
+        db.query(CiCryptoRegimeDisagreement)
+        .order_by(CiCryptoRegimeDisagreement.as_of_at.desc(), CiCryptoRegimeDisagreement.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def build_ci_regime_scorecard(db: Session, *, requested_window: str = "30d", now: datetime | None = None) -> dict[str, Any]:
+    run_time = ensure_utc(now) or datetime.now(UTC)
+    windows: list[dict[str, Any]] = []
+    for window in CI_SCORECARD_WINDOWS:
+        cutoff = run_time - _scorecard_window_delta(window)
+        rows = (
+            db.query(CiCryptoRegimeDisagreement)
+            .filter(CiCryptoRegimeDisagreement.as_of_at >= cutoff)
+            .order_by(CiCryptoRegimeDisagreement.as_of_at.desc(), CiCryptoRegimeDisagreement.id.desc())
+            .all()
+        )
+        ci_correct = [row for row in rows if row.outcome == "ci_correct"]
+        core_correct = [row for row in rows if row.outcome == "core_correct"]
+        inconclusive = [row for row in rows if row.outcome == "inconclusive"]
+        open_rows = [row for row in rows if row.outcome is None]
+        directional_total = len(ci_correct) + len(core_correct)
+        disagreement_types: dict[str, int] = {}
+        for row in rows:
+            key = f"ci_{row.ci_state}_core_{row.core_state}"
+            disagreement_types[key] = disagreement_types.get(key, 0) + 1
+        windows.append(
+            {
+                "window": window,
+                "total_disagreements": len(rows),
+                "ci_correct_count": len(ci_correct),
+                "core_correct_count": len(core_correct),
+                "inconclusive_count": len(inconclusive),
+                "open_count": len(open_rows),
+                "ci_win_rate_pct": round((len(ci_correct) / directional_total) * 100.0, 2) if directional_total else 0.0,
+                "core_win_rate_pct": round((len(core_correct) / directional_total) * 100.0, 2) if directional_total else 0.0,
+                "avg_btc_return_when_ci_correct": _mean_decimal([row.btc_return_pct for row in ci_correct]),
+                "avg_btc_return_when_core_correct": _mean_decimal([row.btc_return_pct for row in core_correct]),
+                "most_common_disagreement_type": max(disagreement_types, key=disagreement_types.get) if disagreement_types else None,
+            }
+        )
+
+    recent_cutoff = run_time - _scorecard_window_delta(requested_window if requested_window in CI_SCORECARD_WINDOWS else "30d")
+    recent = (
+        db.query(CiCryptoRegimeDisagreement)
+        .filter(CiCryptoRegimeDisagreement.as_of_at >= recent_cutoff)
+        .order_by(CiCryptoRegimeDisagreement.as_of_at.desc(), CiCryptoRegimeDisagreement.id.desc())
+        .limit(25)
+        .all()
+    )
+    return {
+        "requested_window": requested_window if requested_window in CI_SCORECARD_WINDOWS else "30d",
+        "windows": windows,
+        "recent": recent,
+    }
+
+
+def _scorecard_window_delta(window: str) -> timedelta:
+    mapping = {
+        "7d": timedelta(days=7),
+        "30d": timedelta(days=30),
+        "90d": timedelta(days=90),
+    }
+    return mapping.get(window, timedelta(days=30))
+
+
+def _mean_decimal(values: list[Any]) -> float | None:
+    cleaned = [float(value) for value in values if value is not None]
+    if not cleaned:
+        return None
+    return round(sum(cleaned) / len(cleaned), 5)
+
+
+def _state_freshness_payload(summary: dict[str, Any], *, run_time: datetime | None = None) -> dict[str, Any]:
+    now = ensure_utc(run_time) or datetime.now(UTC)
+    raw = summary if isinstance(summary, dict) else {}
+    fresh_until_map: dict[str, datetime | None] = {}
+    for timeframe, value in (raw.get("fresh_until_by_timeframe") or {}).items():
+        parsed = ensure_utc(value) if isinstance(value, datetime) else ensure_utc(_safe_parse_iso(value))
+        fresh_until_map[str(timeframe)] = parsed
+    non_null = [value for value in fresh_until_map.values() if value is not None]
+    expires_at = min(non_null) if non_null else None
+    stale_timeframes = [str(item) for item in (raw.get("stale_timeframes") or [])]
+    stale = bool(raw.get("stale", False)) or (expires_at is not None and now > expires_at)
+    return {
+        "stale": stale,
+        "expires_at": expires_at,
+        "stale_timeframes": stale_timeframes,
+        "fresh_until_by_timeframe": fresh_until_map,
+    }
+
+
+def _safe_parse_iso(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return ensure_utc(value)
+    try:
+        return ensure_utc(datetime.fromisoformat(str(value)))
+    except ValueError:
+        return None
+
+
 def build_ci_crypto_regime_current_snapshot(db: Session) -> dict[str, Any] | None:
     state = get_latest_ci_crypto_regime_state(db)
     if state is None:
@@ -316,12 +457,15 @@ def build_ci_crypto_regime_current_snapshot(db: Session) -> dict[str, Any] | Non
     latest_core = _latest_core_regime_for_display(db)
     summary = state.summary_json or {}
     run = state.run or get_latest_ci_crypto_regime_run(db)
+    freshness = _state_freshness_payload(summary)
     return {
         "enabled": settings.enabled,
         "advisory_only": settings.advisory_only,
         "as_of_at": state.as_of_at,
         "state": state.state,
         "confidence": state.confidence,
+        "stale": freshness["stale"],
+        "expires_at": freshness["expires_at"],
         "core_regime_state": state.core_regime_state,
         "agreement_with_core": state.agreement_with_core,
         "advisory_action": state.advisory_action,
@@ -344,6 +488,8 @@ def build_ci_crypto_regime_current_snapshot(db: Session) -> dict[str, Any] | Non
         "hurst_status": summary.get("hurst_status"),
         "hurst_ready": bool(summary.get("hurst_ready", False)),
         "degraded_reasons": list(summary.get("degraded_reasons", [])),
+        "stale_timeframes": freshness["stale_timeframes"],
+        "fresh_until_by_timeframe": freshness["fresh_until_by_timeframe"],
     }
 
 
@@ -362,6 +508,8 @@ def build_ci_crypto_regime_runtime_status(db: Session) -> dict[str, Any]:
         "run_interval_minutes": settings.run_interval_minutes,
         "stale_after_seconds": settings.stale_after_seconds,
         "state": current.get("state") if current else None,
+        "stale": bool(current.get("stale", False)) if current else False,
+        "expires_at": current.get("expires_at") if current else None,
         "confidence": current.get("confidence") if current else None,
         "agreement_with_core": current.get("agreement_with_core") if current else None,
         "advisory_action": current.get("advisory_action") if current else None,
@@ -381,6 +529,8 @@ def build_ci_crypto_regime_runtime_status(db: Session) -> dict[str, Any]:
         "hurst_status": current.get("hurst_status") if current else None,
         "hurst_ready": bool(current.get("hurst_ready", False)) if current else False,
         "degraded_reasons": list(current.get("degraded_reasons", [])) if current else [],
+        "stale_timeframes": list(current.get("stale_timeframes", [])) if current else [],
+        "fresh_until_by_timeframe": dict(current.get("fresh_until_by_timeframe", {})) if current else {},
     }
 
 
@@ -597,6 +747,8 @@ def run_ci_crypto_regime_advisory(
         computed=computed,
         core_regime_state=inputs.latest_core_regime.regime if inputs.latest_core_regime else None,
     )
+    _record_disagreement_if_needed(db, run=run, state=state)
+    _prune_ci_retention(db, runtime=runtime, now=run_time)
 
     event_type = "ci_crypto_regime.inference_complete" if status == "success" else "ci_crypto_regime.run_degraded"
     severity = "info" if status == "success" else "warning"
@@ -667,11 +819,19 @@ def _collect_inference_inputs(
         if row is not None
     ]
 
-    newest_times = [ensure_utc(row.candle_timestamp) for row in [*feature_rows_1h, *feature_rows_4h] if ensure_utc(row.candle_timestamp) is not None]
+    newest_feature_at_by_timeframe = {
+        "1h": _latest_feature_timestamp(feature_rows_1h),
+        "4h": _latest_feature_timestamp(feature_rows_4h),
+    }
+    newest_times = [timestamp for timestamp in newest_feature_at_by_timeframe.values() if timestamp is not None]
     newest_feature_at = max(newest_times) if newest_times else None
     oldest_required_feature_at = min(newest_times) if newest_times else None
-    stale_cutoff = run_time - timedelta(seconds=max(60, runtime.stale_after_seconds))
-    stale = bool(newest_feature_at is None or newest_feature_at < stale_cutoff)
+    stale_timeframes = [
+        timeframe
+        for timeframe, timestamp in newest_feature_at_by_timeframe.items()
+        if _is_feature_timeframe_stale(timeframe=timeframe, newest_feature_at=timestamp, run_time=run_time, runtime=runtime)
+    ]
+    stale = bool(stale_timeframes)
 
     feature_values = _build_feature_values(feature_rows_1h=feature_rows_1h, feature_rows_4h=feature_rows_4h, run_time=run_time)
     orderbook = _collect_orderbook_inputs(db, runtime=runtime, run_time=run_time, orderbook_fetcher=orderbook_fetcher)
@@ -696,7 +856,9 @@ def _collect_inference_inputs(
         orderbook_snapshots=orderbook.snapshots,
         orderbook_status=orderbook.status,
         orderbook_ready=orderbook.ready,
+        orderbook_window_ready=orderbook.window_ready,
         orderbook_used=orderbook.used,
+        orderbook_snapshot_counts=orderbook.snapshot_counts,
         defillama_status=defillama.status,
         defillama_ready=defillama.ready,
         defillama_used=defillama.used,
@@ -705,9 +867,45 @@ def _collect_inference_inputs(
         hurst_used=hurst.used,
         degraded_reasons=degraded_reasons,
         stale=stale,
+        stale_timeframes=stale_timeframes,
         newest_feature_at=newest_feature_at,
         oldest_required_feature_at=oldest_required_feature_at,
+        newest_feature_at_by_timeframe=newest_feature_at_by_timeframe,
     )
+
+
+def _latest_feature_timestamp(rows: list[FeatureSnapshot]) -> datetime | None:
+    timestamps = [ensure_utc(row.candle_timestamp) for row in rows if ensure_utc(row.candle_timestamp) is not None]
+    return max(timestamps) if timestamps else None
+
+
+def _freshness_window_for_timeframe(*, timeframe: str, runtime: CiCryptoRegimeSettings) -> timedelta:
+    buffer = timedelta(seconds=max(60, runtime.stale_after_seconds))
+    if timeframe == "15m":
+        return buffer
+    return CI_FRESHNESS_TIMEFRAME_WINDOWS.get(timeframe, timedelta()) + buffer
+
+
+def _fresh_until_for_timeframe(
+    *,
+    timeframe: str,
+    newest_feature_at: datetime | None,
+    runtime: CiCryptoRegimeSettings,
+) -> datetime | None:
+    if newest_feature_at is None:
+        return None
+    return newest_feature_at + _freshness_window_for_timeframe(timeframe=timeframe, runtime=runtime)
+
+
+def _is_feature_timeframe_stale(
+    *,
+    timeframe: str,
+    newest_feature_at: datetime | None,
+    run_time: datetime,
+    runtime: CiCryptoRegimeSettings,
+) -> bool:
+    fresh_until = _fresh_until_for_timeframe(timeframe=timeframe, newest_feature_at=newest_feature_at, runtime=runtime)
+    return fresh_until is None or run_time > fresh_until
 
 
 def _build_feature_values(
@@ -904,7 +1102,16 @@ def _collect_orderbook_inputs(
     orderbook_fetcher: Callable[[str, int], OrderBookSnapshot] | None,
 ) -> _OrderbookCollection:
     if not runtime.use_orderbook:
-        return _OrderbookCollection(feature_values=[], snapshots=[], status="disabled", ready=False, used=False, degraded_reasons=[])
+        return _OrderbookCollection(
+            feature_values=[],
+            snapshots=[],
+            status="disabled",
+            ready=False,
+            window_ready=False,
+            used=False,
+            degraded_reasons=[],
+            snapshot_counts={},
+        )
 
     adapter: KrakenOrderBookAdapter | None = None
     fetcher = orderbook_fetcher
@@ -915,6 +1122,7 @@ def _collect_orderbook_inputs(
     feature_values: list[_FeatureValue] = []
     snapshots: list[_OrderbookSnapshotInput] = []
     degraded_reasons: list[str] = []
+    hard_degraded_reasons: list[str] = []
     successful_symbols: set[str] = set()
 
     try:
@@ -929,6 +1137,7 @@ def _collect_orderbook_inputs(
             except Exception as exc:  # pragma: no cover - exercised by worker tests
                 feature_values.extend(_missing_orderbook_feature_values(symbol=symbol, as_of_at=run_time))
                 degraded_reasons.append("orderbook_unavailable")
+                hard_degraded_reasons.append("orderbook_unavailable")
                 _emit_worker_event(
                     db,
                     event_type="ci_crypto_regime.orderbook_unavailable",
@@ -941,10 +1150,18 @@ def _collect_orderbook_inputs(
             adapter.close()
 
     existing_counts = _orderbook_history_counts(db)
-    required = max(1, runtime.min_book_snapshots)
-    ready = bool(successful_symbols) and all(existing_counts.get(symbol, 0) + (1 if symbol in successful_symbols else 0) >= required for symbol in CI_ORDERBOOK_SYMBOLS)
+    snapshot_counts = {
+        symbol: existing_counts.get(symbol, 0) + (1 if symbol in successful_symbols else 0)
+        for symbol in CI_ORDERBOOK_SYMBOLS
+    }
+    ready_required = max(1, runtime.min_book_snapshots_ready)
+    window_required = max(ready_required, runtime.book_window_snapshots)
+    ready = bool(successful_symbols) and all(snapshot_counts.get(symbol, 0) >= ready_required for symbol in CI_ORDERBOOK_SYMBOLS)
+    window_ready = bool(successful_symbols) and all(snapshot_counts.get(symbol, 0) >= window_required for symbol in CI_ORDERBOOK_SYMBOLS)
+    if ready and not window_ready:
+        degraded_reasons.append("orderbook_partial_window")
 
-    market_score = _market_microstructure_score(snapshots) if snapshots and not degraded_reasons else None
+    market_score = _market_microstructure_score(snapshots) if snapshots and not hard_degraded_reasons else None
     feature_values.append(
         _feature_value(
             "microstructure_support_score",
@@ -956,23 +1173,25 @@ def _collect_orderbook_inputs(
         )
     )
 
-    if degraded_reasons and not snapshots:
+    if hard_degraded_reasons and not snapshots:
         status = "unavailable"
-    elif degraded_reasons:
+    elif hard_degraded_reasons:
         status = "partial"
     elif ready:
         status = "ready"
     else:
         status = "warming"
 
-    used = ready and market_score is not None and not degraded_reasons
+    used = ready and market_score is not None and not hard_degraded_reasons
     return _OrderbookCollection(
         feature_values=feature_values,
         snapshots=snapshots,
         status=status,
         ready=ready,
+        window_ready=window_ready,
         used=used,
         degraded_reasons=sorted(set(degraded_reasons)),
+        snapshot_counts=snapshot_counts,
     )
 
 
@@ -1020,6 +1239,8 @@ def _compute_rules_inference(
         confidence = 0.35
         degraded = True
         reason_codes = ["stale_internal_data", *degraded_reasons]
+        for timeframe in inputs.stale_timeframes:
+            reason_codes.append(f"stale_internal_data_{timeframe}")
     elif composite >= 0.67 and breadth_score >= 0.55 and trend_score >= 0.50:
         state = "bull"
         confidence = _confidence_from_score(state=state, score=composite)
@@ -1059,12 +1280,10 @@ def _compute_rules_inference(
 
     if state == "bull":
         advisory_action = "allow" if agreement == "agree" else "tighten"
-    elif state == "neutral":
+    elif state in {"neutral", "risk_off"}:
         advisory_action = "tighten"
-    elif state == "risk_off":
-        advisory_action = "block"
     else:
-        advisory_action = "ignore"
+        advisory_action = "unavailable"
 
     summary = {
         "base_composite_score": base_composite,
@@ -1080,10 +1299,23 @@ def _compute_rules_inference(
         "feature_contract_version": CI_FEATURE_SET_VERSION,
         "run_interval_minutes": runtime.run_interval_minutes,
         "stale": inputs.stale,
+        "stale_timeframes": inputs.stale_timeframes,
         "newest_feature_at": inputs.newest_feature_at.isoformat() if inputs.newest_feature_at else None,
         "oldest_required_feature_at": inputs.oldest_required_feature_at.isoformat() if inputs.oldest_required_feature_at else None,
+        "newest_feature_at_by_timeframe": {
+            timeframe: timestamp.isoformat() if timestamp is not None else None
+            for timeframe, timestamp in inputs.newest_feature_at_by_timeframe.items()
+        },
+        "fresh_until_by_timeframe": {
+            timeframe: _fresh_until_for_timeframe(timeframe=timeframe, newest_feature_at=timestamp, runtime=runtime).isoformat()
+            if _fresh_until_for_timeframe(timeframe=timeframe, newest_feature_at=timestamp, runtime=runtime) is not None
+            else None
+            for timeframe, timestamp in inputs.newest_feature_at_by_timeframe.items()
+        },
         "orderbook_status": inputs.orderbook_status,
         "orderbook_ready": inputs.orderbook_ready,
+        "orderbook_window_ready": inputs.orderbook_window_ready,
+        "orderbook_snapshot_counts": inputs.orderbook_snapshot_counts,
         "orderbook_used": inputs.orderbook_used,
         "defillama_status": inputs.defillama_status,
         "defillama_ready": inputs.defillama_ready,
@@ -1206,6 +1438,141 @@ def _upsert_ci_state(
     return state
 
 
+def _record_disagreement_if_needed(
+    db: Session,
+    *,
+    run: CiCryptoRegimeRun,
+    state: CiCryptoRegimeState,
+) -> CiCryptoRegimeDisagreement | None:
+    if state.agreement_with_core != "disagree":
+        return None
+    if state.state not in {"bull", "neutral", "risk_off"}:
+        return None
+    existing = (
+        db.query(CiCryptoRegimeDisagreement)
+        .filter(CiCryptoRegimeDisagreement.ci_run_id == run.id)
+        .one_or_none()
+    )
+    if existing is not None:
+        return existing
+    disagreement = CiCryptoRegimeDisagreement(
+        ci_run_id=run.id,
+        as_of_at=state.as_of_at,
+        ci_state=state.state,
+        core_state=state.core_regime_state or "unavailable",
+        ci_advisory_action=state.advisory_action,
+        btc_price_at_disagreement=_latest_btc_price_at_or_before(db, at=state.as_of_at),
+    )
+    db.add(disagreement)
+    db.flush()
+    _emit_worker_event(
+        db,
+        event_type="ci_crypto_regime.disagreement_logged",
+        severity="info",
+        message="CI crypto regime disagreement was logged for retrospective scoring.",
+        payload={
+            "run_id": run.id,
+            "ci_state": disagreement.ci_state,
+            "core_state": disagreement.core_state,
+        },
+    )
+    return disagreement
+
+
+def resolve_ci_regime_disagreements(db: Session, *, now: datetime | None = None) -> dict[str, Any]:
+    run_time = ensure_utc(now) or datetime.now(UTC)
+    runtime = resolve_ci_crypto_regime_settings(db)
+    open_rows = (
+        db.query(CiCryptoRegimeDisagreement)
+        .filter(CiCryptoRegimeDisagreement.resolution_at.is_(None))
+        .order_by(CiCryptoRegimeDisagreement.as_of_at.asc(), CiCryptoRegimeDisagreement.id.asc())
+        .all()
+    )
+    if not open_rows:
+        return {"status": "skipped", "skip_reason": "no_open_disagreements", "resolved": 0}
+
+    resolved = 0
+    unresolved_price_rows = 0
+    for row in open_rows:
+        age = run_time - ensure_utc(row.as_of_at)
+        if age < timedelta(hours=1):
+            continue
+        resolution_hours = 4 if age >= timedelta(hours=4) else 1
+        if resolution_hours == 1 and row.resolution_timeframe == "1h":
+            continue
+        target_at = ensure_utc(row.as_of_at) + timedelta(hours=resolution_hours)
+        resolution_price = _latest_btc_price_at_or_before(db, at=target_at)
+        if resolution_price is None or row.btc_price_at_disagreement is None:
+            unresolved_price_rows += 1
+            continue
+        outcome, basis, btc_return_pct = _resolve_disagreement_outcome(
+            ci_state=row.ci_state,
+            core_state=row.core_state,
+            start_price=float(row.btc_price_at_disagreement),
+            end_price=float(resolution_price),
+            directional_threshold_pct=runtime.disagreement_return_threshold_pct,
+            resolution_hours=resolution_hours,
+        )
+        if outcome == "inconclusive" and resolution_hours == 1:
+            row.resolution_timeframe = "1h"
+            row.notes = "Awaiting 4h confirmation after inconclusive 1h check."
+            continue
+        row.resolution_at = target_at
+        row.resolution_timeframe = f"{resolution_hours}h"
+        row.outcome = outcome
+        row.outcome_basis = basis
+        row.btc_price_at_resolution = resolution_price
+        row.btc_return_pct = btc_return_pct
+        row.notes = f"Resolved via {resolution_hours}h BTC price lookup."
+        resolved += 1
+
+    if resolved:
+        _emit_worker_event(
+            db,
+            event_type="ci_crypto_regime.disagreement_resolved",
+            severity="info",
+            message="CI crypto regime disagreement retrospective updated.",
+            payload={"resolved": resolved, "price_data_unavailable": unresolved_price_rows},
+        )
+    elif unresolved_price_rows:
+        _emit_worker_event(
+            db,
+            event_type="ci_crypto_regime.disagreement_resolution_skipped",
+            severity="warning",
+            message="CI crypto regime disagreement retrospective is waiting on price data.",
+            payload={"skip_reason": "price_data_unavailable", "count": unresolved_price_rows},
+        )
+    return {
+        "status": "executed" if resolved else "skipped",
+        "skip_reason": None if resolved else ("price_data_unavailable" if unresolved_price_rows else "no_open_disagreements"),
+        "resolved": resolved,
+    }
+
+
+def _resolve_disagreement_outcome(
+    *,
+    ci_state: str,
+    core_state: str,
+    start_price: float,
+    end_price: float,
+    directional_threshold_pct: float,
+    resolution_hours: int,
+) -> tuple[str, str, float]:
+    if start_price <= 0:
+        return "inconclusive", "price_direction", 0.0
+    btc_return_pct = round(((end_price - start_price) / start_price) * 100.0, 5)
+    threshold = abs(directional_threshold_pct)
+    if abs(btc_return_pct) < threshold:
+        return "inconclusive", "price_direction", btc_return_pct
+
+    observed_direction = "bull" if btc_return_pct > 0 else "risk_off"
+    if ci_state == observed_direction and core_state != observed_direction:
+        return "ci_correct", "price_direction", btc_return_pct
+    if core_state == observed_direction and ci_state != observed_direction:
+        return "core_correct", "price_direction", btc_return_pct
+    return "inconclusive", "price_direction", btc_return_pct
+
+
 def _emit_worker_event(
     db: Session,
     *,
@@ -1256,6 +1623,34 @@ def _recent_candles(db: Session, *, symbol: str, timeframe: str, limit: int) -> 
         .all()
     )
     return list(reversed(rows))
+
+
+def _latest_btc_price_at_or_before(db: Session, *, at: datetime) -> Decimal | None:
+    target = ensure_utc(at)
+    for timeframe in ("15m", "1h", "4h"):
+        row = (
+            db.query(Candle)
+            .filter(
+                Candle.asset_class == "crypto",
+                Candle.symbol == "XBTUSD",
+                Candle.timeframe == timeframe,
+                Candle.timestamp <= target,
+            )
+            .order_by(Candle.timestamp.desc(), Candle.id.desc())
+            .first()
+        )
+        if row is not None:
+            return row.close
+    return None
+
+
+def _prune_ci_retention(db: Session, *, runtime: CiCryptoRegimeSettings, now: datetime) -> None:
+    feature_cutoff = now - timedelta(days=CI_FEATURE_RETENTION_DAYS)
+    run_cutoff = now - timedelta(days=CI_RUN_RETENTION_DAYS)
+    book_cutoff = now - timedelta(days=max(1, runtime.book_raw_retention_days))
+    db.query(CiCryptoRegimeFeatureSnapshot).filter(CiCryptoRegimeFeatureSnapshot.as_of_at < feature_cutoff).delete(synchronize_session=False)
+    db.query(CiCryptoRegimeRun).filter(CiCryptoRegimeRun.run_started_at < run_cutoff).delete(synchronize_session=False)
+    db.query(CiCryptoRegimeOrderbookSnapshot).filter(CiCryptoRegimeOrderbookSnapshot.as_of_at < book_cutoff).delete(synchronize_session=False)
 
 
 def _recent_ci_feature_values(db: Session, *, feature_name: str, limit: int = 96) -> list[tuple[datetime | None, float]]:
