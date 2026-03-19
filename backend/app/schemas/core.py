@@ -683,6 +683,46 @@ class StockPaperContractSummaryRead(BotBaseModel):
     losers_count: int = 0
     latest_ai_scan_at: datetime | None = None
 
+
+class StockPaperContractLedgerRead(BotBaseModel):
+    id: int
+    trade_date: date
+    symbol: str
+    ai_named: bool
+    ai_bucket: str | None = None
+    ai_reason: str | None = None
+    ai_quality_1h: str | None = None
+    ai_quality_15m: str | None = None
+    ai_reclaim_state: str | None = None
+    ai_risk_note: str | None = None
+    ai_scanned_at: datetime | None = None
+    strategy_name: str = "htf_reclaim_long"
+    strategy_status: str | None = None
+    candidate_timestamp: datetime | None = None
+    pair_1h_used: str | None = None
+    pair_15m_used: str | None = None
+    bias_pass_1h: bool | None = None
+    setup_pass_15m: bool | None = None
+    trigger_pass_5m: bool | None = None
+    indicator_approved: bool | None = None
+    risk_status: str | None = None
+    risk_decision_reason: str | None = None
+    entry_price: Decimal | None = None
+    stop_price: Decimal | None = None
+    target_price: Decimal | None = None
+    trade_taken: bool | None = None
+    trade_status: str | None = None
+    filled_at: datetime | None = None
+    position_status: str | None = None
+    realized_pnl: Decimal | None = None
+    unrealized_pnl: Decimal | None = None
+    outcome: str | None = None
+    notes: list[str] = Field(default_factory=list)
+    first_seen_at: datetime | None = None
+    last_synced_at: datetime | None = None
+    closed_at: datetime | None = None
+
+
 class OpenOrderStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 

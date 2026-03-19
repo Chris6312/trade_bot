@@ -7,6 +7,7 @@ from backend.app.core.config import get_settings
 from backend.app.schemas.core import (
     LiveRolloutChecklistRead,
     PostTradeReviewRead,
+    StockPaperContractLedgerRead,
     StockPaperContractReviewRead,
     StockPaperContractSummaryRead,
     SystemEventRead,
@@ -21,7 +22,12 @@ from backend.app.services.operator_service import (
     validate_circuit_breaker,
     validate_kill_switch,
 )
-from backend.app.services.stock_paper_contract_service import build_stock_paper_contract_reviews, build_stock_paper_contract_summary
+from backend.app.services.stock_paper_contract_service import (
+    build_stock_paper_contract_reviews,
+    build_stock_paper_contract_summary,
+    list_stock_paper_contract_ledger,
+    sync_stock_paper_contract_ledger,
+)
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 
@@ -100,3 +106,24 @@ def get_stock_paper_contract_review(
     db: Session = Depends(get_db),
 ) -> list[StockPaperContractReviewRead]:
     return build_stock_paper_contract_reviews(db, trade_date=trade_date, symbol=symbol, limit=limit)
+
+
+@router.post("/stock-paper-contract-ledger/sync", response_model=list[StockPaperContractLedgerRead])
+def post_stock_paper_contract_ledger_sync(
+    trade_date: date | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[StockPaperContractLedgerRead]:
+    return sync_stock_paper_contract_ledger(db, trade_date=trade_date, symbol=symbol, limit=limit)
+
+
+@router.get("/stock-paper-contract-ledger", response_model=list[StockPaperContractLedgerRead])
+def get_stock_paper_contract_ledger(
+    trade_date: date | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    outcome: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> list[StockPaperContractLedgerRead]:
+    return list_stock_paper_contract_ledger(db, trade_date=trade_date, symbol=symbol, outcome=outcome, limit=limit)

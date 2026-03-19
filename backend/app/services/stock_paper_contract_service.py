@@ -2,12 +2,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from typing import Iterable
 
 from sqlalchemy.orm import Session
 
-from backend.app.models.core import AiResearchPick, ExecutionFill, ExecutionOrder, PositionState, RiskSnapshot, StrategySnapshot
-from backend.app.schemas.core import StockPaperContractReviewRead, StockPaperContractSummaryRead
+from backend.app.models.core import (
+    AiResearchPick,
+    ExecutionFill,
+    ExecutionOrder,
+    PositionState,
+    RiskSnapshot,
+    StockPaperContractLedger,
+    StrategySnapshot,
+)
+from backend.app.schemas.core import (
+    StockPaperContractLedgerRead,
+    StockPaperContractReviewRead,
+    StockPaperContractSummaryRead,
+)
 from backend.app.services.universe_service import trading_date_for_now
 
 STOCK_PAPER_CONTRACT_STRATEGY = "htf_reclaim_long"
@@ -32,64 +43,8 @@ def build_stock_paper_contract_reviews(
     limit: int = 25,
 ) -> list[StockPaperContractReviewRead]:
     target_trade_date = trade_date or _latest_trade_date(db) or trading_date_for_now(datetime.now(UTC))
-    query = db.query(AiResearchPick).filter(AiResearchPick.trade_date == target_trade_date.isoformat())
-    if symbol is not None:
-        query = query.filter(AiResearchPick.symbol == symbol.upper())
-    picks = (
-        query
-        .order_by(AiResearchPick.scanned_at.desc(), AiResearchPick.id.asc())
-        .limit(max(1, min(limit, 100)))
-        .all()
-    )
-
-    reviews: list[StockPaperContractReviewRead] = []
-    for pick in picks:
-        strategy_context = _latest_strategy_context(db, symbol=pick.symbol)
-        risk_row = _latest_risk_row(db, symbol=pick.symbol)
-        order = _matching_order(db, risk_row=risk_row, symbol=pick.symbol)
-        fill = _latest_fill(db, order=order)
-        position = _latest_position(db, symbol=pick.symbol)
-
-        trade_taken = order is not None
-        outcome = _resolve_outcome(strategy_context=strategy_context, risk_row=risk_row, order=order, position=position)
-        notes = _build_notes(pick=pick, strategy_context=strategy_context, risk_row=risk_row, order=order, fill=fill, position=position)
-
-        reviews.append(
-            StockPaperContractReviewRead(
-                trade_date=target_trade_date,
-                symbol=pick.symbol,
-                ai_named=True,
-                ai_bucket=_payload_value(pick, "bucket"),
-                ai_reason=pick.catalyst,
-                ai_quality_1h=_payload_value(pick, "quality_1h"),
-                ai_quality_15m=_payload_value(pick, "quality_15m"),
-                ai_reclaim_state=_payload_value(pick, "reclaim_state"),
-                ai_risk_note=pick.risk_reward_note,
-                ai_scanned_at=_ensure_utc(pick.scanned_at),
-                strategy_status=strategy_context.row.status if strategy_context.row is not None else None,
-                candidate_timestamp=_ensure_utc(strategy_context.row.candidate_timestamp) if strategy_context.row is not None else None,
-                pair_1h_used=strategy_context.pair_1h,
-                pair_15m_used=strategy_context.pair_15m,
-                bias_pass_1h=strategy_context.bias_pass,
-                setup_pass_15m=strategy_context.setup_pass,
-                trigger_pass_5m=strategy_context.trigger_pass,
-                indicator_approved=(strategy_context.row.status == "ready") if strategy_context.row is not None else None,
-                risk_status=risk_row.status if risk_row is not None else None,
-                risk_decision_reason=risk_row.decision_reason if risk_row is not None else None,
-                entry_price=risk_row.entry_price if risk_row is not None else None,
-                stop_price=risk_row.stop_price if risk_row is not None else None,
-                target_price=risk_row.take_profit_price if risk_row is not None else None,
-                trade_taken=trade_taken,
-                trade_status=_trade_status_label(strategy_context=strategy_context, risk_row=risk_row, order=order),
-                filled_at=_ensure_utc(fill.fill_timestamp) if fill is not None else None,
-                position_status=position.status if position is not None else None,
-                realized_pnl=position.realized_pnl if position is not None else None,
-                unrealized_pnl=position.unrealized_pnl if position is not None else None,
-                outcome=outcome,
-                notes=notes,
-            )
-        )
-    return reviews
+    picks = _query_trade_date_picks(db, trade_date=target_trade_date, symbol=symbol, limit=limit)
+    return [_build_review_from_pick(db, pick=pick, trade_date=target_trade_date) for pick in picks]
 
 
 def build_stock_paper_contract_summary(
@@ -100,7 +55,7 @@ def build_stock_paper_contract_summary(
     target_trade_date = trade_date or _latest_trade_date(db) or trading_date_for_now(datetime.now(UTC))
     reviews = build_stock_paper_contract_reviews(db, trade_date=target_trade_date, limit=100)
 
-    summary = StockPaperContractSummaryRead(
+    return StockPaperContractSummaryRead(
         trade_date=target_trade_date,
         shortlist_count=len(reviews),
         ready_now_count=sum(1 for row in reviews if (row.ai_bucket or "").lower() == "ready_now"),
@@ -120,18 +75,152 @@ def build_stock_paper_contract_summary(
         losers_count=sum(1 for row in reviews if (row.outcome or "").lower() == "closed_loss"),
         latest_ai_scan_at=max((_ensure_utc(row.ai_scanned_at) for row in reviews if row.ai_scanned_at is not None), default=None),
     )
-    return summary
+
+
+def sync_stock_paper_contract_ledger(
+    db: Session,
+    *,
+    trade_date: date | None = None,
+    symbol: str | None = None,
+    limit: int = 100,
+    synced_at: datetime | None = None,
+) -> list[StockPaperContractLedgerRead]:
+    target_trade_date = trade_date or _latest_trade_date(db) or trading_date_for_now(datetime.now(UTC))
+    sync_time = _ensure_utc(synced_at) or datetime.now(UTC)
+    reviews = build_stock_paper_contract_reviews(db, trade_date=target_trade_date, symbol=symbol, limit=limit)
+
+    query = db.query(StockPaperContractLedger).filter(
+        StockPaperContractLedger.trade_date == target_trade_date.isoformat(),
+        StockPaperContractLedger.strategy_name == STOCK_PAPER_CONTRACT_STRATEGY,
+    )
+    if symbol is not None:
+        query = query.filter(StockPaperContractLedger.symbol == symbol.upper())
+    elif reviews:
+        query = query.filter(StockPaperContractLedger.symbol.in_([row.symbol for row in reviews]))
+    else:
+        query = query.filter(StockPaperContractLedger.id == -1)
+
+    existing_by_symbol = {row.symbol: row for row in query.all()}
+    for review in reviews:
+        ledger_row = existing_by_symbol.get(review.symbol)
+        if ledger_row is None:
+            ledger_row = StockPaperContractLedger(
+                trade_date=review.trade_date.isoformat(),
+                symbol=review.symbol,
+                strategy_name=review.strategy_name,
+                timeframe=STOCK_PAPER_CONTRACT_TIMEFRAME,
+                first_seen_at=_ensure_utc(review.ai_scanned_at) or sync_time,
+            )
+            db.add(ledger_row)
+            existing_by_symbol[review.symbol] = ledger_row
+        _apply_review_to_ledger(ledger_row, review=review, synced_at=sync_time)
+
+    db.commit()
+    return list_stock_paper_contract_ledger(db, trade_date=target_trade_date, symbol=symbol, limit=limit)
+
+
+def list_stock_paper_contract_ledger(
+    db: Session,
+    *,
+    trade_date: date | None = None,
+    symbol: str | None = None,
+    outcome: str | None = None,
+    limit: int = 100,
+) -> list[StockPaperContractLedgerRead]:
+    query = db.query(StockPaperContractLedger)
+    if trade_date is not None:
+        query = query.filter(StockPaperContractLedger.trade_date == trade_date.isoformat())
+    if symbol is not None:
+        query = query.filter(StockPaperContractLedger.symbol == symbol.upper())
+    if outcome is not None:
+        query = query.filter(StockPaperContractLedger.outcome == outcome.lower())
+
+    rows = (
+        query.order_by(
+            StockPaperContractLedger.trade_date.desc(),
+            StockPaperContractLedger.last_synced_at.desc(),
+            StockPaperContractLedger.ai_scanned_at.desc(),
+            StockPaperContractLedger.id.desc(),
+        )
+        .limit(max(1, min(limit, 200)))
+        .all()
+    )
+    return [_ledger_to_read(row) for row in rows]
 
 
 def _latest_trade_date(db: Session) -> date | None:
-    row = (
-        db.query(AiResearchPick.trade_date)
-        .order_by(AiResearchPick.trade_date.desc())
-        .first()
-    )
+    row = db.query(AiResearchPick.trade_date).order_by(AiResearchPick.trade_date.desc()).first()
     if row is None or not row[0]:
         return None
     return date.fromisoformat(str(row[0]))
+
+
+def _query_trade_date_picks(
+    db: Session,
+    *,
+    trade_date: date,
+    symbol: str | None,
+    limit: int,
+) -> list[AiResearchPick]:
+    query = db.query(AiResearchPick).filter(AiResearchPick.trade_date == trade_date.isoformat())
+    if symbol is not None:
+        query = query.filter(AiResearchPick.symbol == symbol.upper())
+    return (
+        query.order_by(AiResearchPick.scanned_at.desc(), AiResearchPick.id.asc())
+        .limit(max(1, min(limit, 100)))
+        .all()
+    )
+
+
+def _build_review_from_pick(
+    db: Session,
+    *,
+    pick: AiResearchPick,
+    trade_date: date,
+) -> StockPaperContractReviewRead:
+    strategy_context = _latest_strategy_context(db, symbol=pick.symbol)
+    risk_row = _latest_risk_row(db, symbol=pick.symbol)
+    order = _matching_order(db, risk_row=risk_row, symbol=pick.symbol)
+    fill = _latest_fill(db, order=order)
+    position = _latest_position(db, symbol=pick.symbol)
+
+    trade_taken = order is not None
+    outcome = _resolve_outcome(strategy_context=strategy_context, risk_row=risk_row, order=order, position=position)
+    notes = _build_notes(pick=pick, strategy_context=strategy_context, risk_row=risk_row, order=order, fill=fill, position=position)
+
+    return StockPaperContractReviewRead(
+        trade_date=trade_date,
+        symbol=pick.symbol,
+        ai_named=True,
+        ai_bucket=_payload_value(pick, "bucket"),
+        ai_reason=pick.catalyst,
+        ai_quality_1h=_payload_value(pick, "quality_1h"),
+        ai_quality_15m=_payload_value(pick, "quality_15m"),
+        ai_reclaim_state=_payload_value(pick, "reclaim_state"),
+        ai_risk_note=pick.risk_reward_note,
+        ai_scanned_at=_ensure_utc(pick.scanned_at),
+        strategy_status=strategy_context.row.status if strategy_context.row is not None else None,
+        candidate_timestamp=_ensure_utc(strategy_context.row.candidate_timestamp) if strategy_context.row is not None else None,
+        pair_1h_used=strategy_context.pair_1h,
+        pair_15m_used=strategy_context.pair_15m,
+        bias_pass_1h=strategy_context.bias_pass,
+        setup_pass_15m=strategy_context.setup_pass,
+        trigger_pass_5m=strategy_context.trigger_pass,
+        indicator_approved=(strategy_context.row.status == "ready") if strategy_context.row is not None else None,
+        risk_status=risk_row.status if risk_row is not None else None,
+        risk_decision_reason=risk_row.decision_reason if risk_row is not None else None,
+        entry_price=risk_row.entry_price if risk_row is not None else None,
+        stop_price=risk_row.stop_price if risk_row is not None else None,
+        target_price=risk_row.take_profit_price if risk_row is not None else None,
+        trade_taken=trade_taken,
+        trade_status=_trade_status_label(strategy_context=strategy_context, risk_row=risk_row, order=order),
+        filled_at=_ensure_utc(fill.fill_timestamp) if fill is not None else None,
+        position_status=position.status if position is not None else None,
+        realized_pnl=position.realized_pnl if position is not None else None,
+        unrealized_pnl=position.unrealized_pnl if position is not None else None,
+        outcome=outcome,
+        notes=notes,
+    )
 
 
 def _latest_strategy_context(db: Session, *, symbol: str) -> _StrategyContext:
@@ -187,8 +276,6 @@ def _matching_order(db: Session, *, risk_row: RiskSnapshot | None, symbol: str) 
     return query.order_by(ExecutionOrder.routed_at.desc(), ExecutionOrder.id.desc()).first()
 
 
-
-
 def _latest_fill(db: Session, *, order: ExecutionOrder | None) -> ExecutionFill | None:
     if order is None:
         return None
@@ -198,6 +285,7 @@ def _latest_fill(db: Session, *, order: ExecutionOrder | None) -> ExecutionFill 
         .order_by(ExecutionFill.fill_timestamp.desc(), ExecutionFill.id.desc())
         .first()
     )
+
 
 def _latest_position(db: Session, *, symbol: str) -> PositionState | None:
     return (
@@ -212,7 +300,13 @@ def _latest_position(db: Session, *, symbol: str) -> PositionState | None:
     )
 
 
-def _resolve_outcome(*, strategy_context: _StrategyContext, risk_row: RiskSnapshot | None, order: ExecutionOrder | None, position: PositionState | None) -> str | None:
+def _resolve_outcome(
+    *,
+    strategy_context: _StrategyContext,
+    risk_row: RiskSnapshot | None,
+    order: ExecutionOrder | None,
+    position: PositionState | None,
+) -> str | None:
     if order is None:
         if strategy_context.row is None:
             return "awaiting_indicator"
@@ -239,9 +333,12 @@ def _resolve_outcome(*, strategy_context: _StrategyContext, risk_row: RiskSnapsh
     return position.status
 
 
-
-
-def _trade_status_label(*, strategy_context: _StrategyContext, risk_row: RiskSnapshot | None, order: ExecutionOrder | None) -> str | None:
+def _trade_status_label(
+    *,
+    strategy_context: _StrategyContext,
+    risk_row: RiskSnapshot | None,
+    order: ExecutionOrder | None,
+) -> str | None:
     if order is not None:
         return order.status
     if strategy_context.row is None:
@@ -253,6 +350,7 @@ def _trade_status_label(*, strategy_context: _StrategyContext, risk_row: RiskSna
     if risk_row.status != "accepted":
         return "not_routed"
     return "skipped_ready"
+
 
 def _build_notes(
     *,
@@ -295,6 +393,94 @@ def _build_notes(
         elif position.status == "open":
             notes.append(f"Unrealized PnL: {position.unrealized_pnl}")
     return notes
+
+
+def _apply_review_to_ledger(
+    row: StockPaperContractLedger,
+    *,
+    review: StockPaperContractReviewRead,
+    synced_at: datetime,
+) -> None:
+    row.trade_date = review.trade_date.isoformat()
+    row.symbol = review.symbol.upper()
+    row.strategy_name = review.strategy_name
+    row.timeframe = STOCK_PAPER_CONTRACT_TIMEFRAME
+    row.ai_named = review.ai_named
+    row.ai_bucket = review.ai_bucket
+    row.ai_reason = review.ai_reason
+    row.ai_quality_1h = review.ai_quality_1h
+    row.ai_quality_15m = review.ai_quality_15m
+    row.ai_reclaim_state = review.ai_reclaim_state
+    row.ai_risk_note = review.ai_risk_note
+    row.ai_scanned_at = _ensure_utc(review.ai_scanned_at)
+    row.strategy_status = review.strategy_status
+    row.candidate_timestamp = _ensure_utc(review.candidate_timestamp)
+    row.pair_1h_used = review.pair_1h_used
+    row.pair_15m_used = review.pair_15m_used
+    row.bias_pass_1h = review.bias_pass_1h
+    row.setup_pass_15m = review.setup_pass_15m
+    row.trigger_pass_5m = review.trigger_pass_5m
+    row.indicator_approved = review.indicator_approved
+    row.risk_status = review.risk_status
+    row.risk_decision_reason = review.risk_decision_reason
+    row.entry_price = review.entry_price
+    row.stop_price = review.stop_price
+    row.target_price = review.target_price
+    row.trade_taken = review.trade_taken
+    row.trade_status = review.trade_status
+    row.filled_at = _ensure_utc(review.filled_at)
+    row.position_status = review.position_status
+    row.realized_pnl = review.realized_pnl
+    row.unrealized_pnl = review.unrealized_pnl
+    row.outcome = (review.outcome or None)
+    row.notes_json = list(review.notes or [])
+    row.first_seen_at = _ensure_utc(row.first_seen_at) or _ensure_utc(review.ai_scanned_at) or synced_at
+    row.last_synced_at = synced_at
+    if (review.outcome or "").lower().startswith("closed_"):
+        row.closed_at = _ensure_utc(row.closed_at) or synced_at
+    else:
+        row.closed_at = None
+
+
+def _ledger_to_read(row: StockPaperContractLedger) -> StockPaperContractLedgerRead:
+    return StockPaperContractLedgerRead(
+        id=row.id,
+        trade_date=date.fromisoformat(row.trade_date),
+        symbol=row.symbol,
+        ai_named=row.ai_named,
+        ai_bucket=row.ai_bucket,
+        ai_reason=row.ai_reason,
+        ai_quality_1h=row.ai_quality_1h,
+        ai_quality_15m=row.ai_quality_15m,
+        ai_reclaim_state=row.ai_reclaim_state,
+        ai_risk_note=row.ai_risk_note,
+        ai_scanned_at=_ensure_utc(row.ai_scanned_at),
+        strategy_name=row.strategy_name,
+        strategy_status=row.strategy_status,
+        candidate_timestamp=_ensure_utc(row.candidate_timestamp),
+        pair_1h_used=row.pair_1h_used,
+        pair_15m_used=row.pair_15m_used,
+        bias_pass_1h=row.bias_pass_1h,
+        setup_pass_15m=row.setup_pass_15m,
+        trigger_pass_5m=row.trigger_pass_5m,
+        indicator_approved=row.indicator_approved,
+        risk_status=row.risk_status,
+        risk_decision_reason=row.risk_decision_reason,
+        entry_price=row.entry_price,
+        stop_price=row.stop_price,
+        target_price=row.target_price,
+        trade_taken=row.trade_taken,
+        trade_status=row.trade_status,
+        filled_at=_ensure_utc(row.filled_at),
+        position_status=row.position_status,
+        realized_pnl=row.realized_pnl,
+        unrealized_pnl=row.unrealized_pnl,
+        outcome=row.outcome,
+        notes=list(row.notes_json or []),
+        first_seen_at=_ensure_utc(row.first_seen_at),
+        last_synced_at=_ensure_utc(row.last_synced_at),
+        closed_at=_ensure_utc(row.closed_at),
+    )
 
 
 def _format_pair(value: object) -> str | None:
