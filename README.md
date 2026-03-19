@@ -103,9 +103,7 @@ Initial release should stay disciplined but allow enough flexibility to support 
 
 ### Stocks
 Recommended starting set:
-- Trend Pullback Long
-- VWAP Reclaim Long
-- Opening Range Breakout Long
+- HTF Context + 5m Reclaim Long
 
 ### Crypto
 Recommended starting set:

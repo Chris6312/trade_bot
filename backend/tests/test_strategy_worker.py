@@ -29,38 +29,38 @@ def db_session(tmp_path: Path) -> Session:
         engine.dispose()
 
 
-
 def test_stock_strategy_candidate_generation_persists_ready_and_blocked_rows(db_session: Session) -> None:
     _seed_universe(db_session, asset_class="stock", venue="alpaca", symbols=("AAPL", "TSLA"))
     _seed_stock_ready_symbol(db_session, symbol="AAPL")
     _seed_stock_blocked_symbol(db_session, symbol="TSLA")
-    _seed_regime(db_session, asset_class="stock", venue="alpaca", timeframe="1h", regime="bull", entry_policy="full")
+    _seed_regime(db_session, asset_class="stock", venue="alpaca", timeframe="5m", regime="bull", entry_policy="full")
 
     worker = StrategyWorker(db_session)
-    summary = worker.build_stock_candidates(timeframe="1h", now=datetime(2026, 3, 14, 14, 0, tzinfo=UTC))
+    summary = worker.build_stock_candidates(timeframe="5m", now=datetime(2026, 3, 14, 14, 0, tzinfo=UTC))
 
-    assert summary.evaluated_rows == 6
-    assert summary.ready_rows >= 1
-    assert summary.blocked_rows >= 1
+    assert summary.evaluated_rows == 2
+    assert summary.ready_rows == 1
+    assert summary.blocked_rows == 1
 
-    rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="1h")
-    assert len(rows) == 6
+    rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="5m")
+    assert len(rows) == 2
 
-    aapl_trend = _row(rows, symbol="AAPL", strategy_name="trend_pullback_long")
-    assert aapl_trend.status == "ready"
-    assert float(aapl_trend.readiness_score) >= 0.60
-    assert float(aapl_trend.composite_score) >= float(aapl_trend.threshold_score)
+    aapl_row = _row(rows, symbol="AAPL", strategy_name="htf_reclaim_long")
+    assert aapl_row.status == "ready"
+    assert float(aapl_row.readiness_score) >= 0.65
+    assert aapl_row.payload["bias_pass"] is True
+    assert aapl_row.payload["setup_pass"] is True
+    assert aapl_row.payload["trigger_pass"] is True
 
-    tsla_trend = _row(rows, symbol="TSLA", strategy_name="trend_pullback_long")
-    assert tsla_trend.status == "blocked"
-    assert "momentum_too_weak" in (tsla_trend.blocked_reasons or [])
+    tsla_row = _row(rows, symbol="TSLA", strategy_name="htf_reclaim_long")
+    assert tsla_row.status == "blocked"
+    assert "1h_bias_fast_not_above_slow" in (tsla_row.blocked_reasons or [])
 
-    state = get_strategy_sync_state(db_session, asset_class="stock", timeframe="1h")
+    state = get_strategy_sync_state(db_session, asset_class="stock", timeframe="5m")
     assert state is not None
     assert state.last_status == "synced"
-    assert state.ready_count == summary.ready_rows
-    assert state.blocked_count == summary.blocked_rows
-
+    assert state.ready_count == 1
+    assert state.blocked_count == 1
 
 
 def test_crypto_strategy_candidate_generation_respects_enable_disable_settings(db_session: Session) -> None:
@@ -95,47 +95,44 @@ def test_crypto_strategy_candidate_generation_respects_enable_disable_settings(d
     assert float(trend_row.readiness_score) >= 0.61
 
 
-
 def test_strategy_engine_respects_persisted_regime_restrictions(db_session: Session) -> None:
     _seed_universe(db_session, asset_class="stock", venue="alpaca", symbols=("AAPL",))
     _seed_stock_ready_symbol(db_session, symbol="AAPL")
-    _seed_regime(db_session, asset_class="stock", venue="alpaca", timeframe="1h", regime="risk_off", entry_policy="blocked")
+    _seed_regime(db_session, asset_class="stock", venue="alpaca", timeframe="5m", regime="risk_off", entry_policy="blocked")
 
     worker = StrategyWorker(db_session)
-    summary = worker.build_stock_candidates(timeframe="1h", now=datetime(2026, 3, 14, 14, 30, tzinfo=UTC))
+    summary = worker.build_stock_candidates(timeframe="5m", now=datetime(2026, 3, 14, 14, 30, tzinfo=UTC))
 
     assert summary.ready_rows == 0
-    assert summary.blocked_rows == 3
-    rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="1h")
+    assert summary.blocked_rows == 1
+    rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="5m")
     assert all("regime_blocked" in (row.blocked_reasons or []) for row in rows)
 
-    state = get_strategy_sync_state(db_session, asset_class="stock", timeframe="1h")
+    state = get_strategy_sync_state(db_session, asset_class="stock", timeframe="5m")
     assert state is not None
     assert state.regime == "risk_off"
     assert state.entry_policy == "blocked"
 
 
-
 def test_strategy_engine_handles_missing_upstream_feature_data(db_session: Session) -> None:
     _seed_universe(db_session, asset_class="stock", venue="alpaca", symbols=("AAPL",))
-    _seed_regime(db_session, asset_class="stock", venue="alpaca", timeframe="1h", regime="bull", entry_policy="full")
+    _seed_regime(db_session, asset_class="stock", venue="alpaca", timeframe="5m", regime="bull", entry_policy="full")
 
     worker = StrategyWorker(db_session)
-    summary = worker.build_stock_candidates(timeframe="1h", now=datetime(2026, 3, 14, 14, 45, tzinfo=UTC))
+    summary = worker.build_stock_candidates(timeframe="5m", now=datetime(2026, 3, 14, 14, 45, tzinfo=UTC))
 
-    assert summary.evaluated_rows == 3
+    assert summary.evaluated_rows == 1
     assert summary.ready_rows == 0
     assert summary.skipped_reason == "no_features"
 
-    rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="1h")
-    assert len(rows) == 3
+    rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="5m")
+    assert len(rows) == 1
     assert all("missing_feature_snapshot" in (row.blocked_reasons or []) for row in rows)
 
-    state = get_strategy_sync_state(db_session, asset_class="stock", timeframe="1h")
+    state = get_strategy_sync_state(db_session, asset_class="stock", timeframe="5m")
     assert state is not None
     assert state.last_status == "no_features"
-    assert state.candidate_count == 3
-
+    assert state.candidate_count == 1
 
 
 def test_strategy_api_exposes_score_and_readiness_output(client) -> None:
@@ -143,27 +140,27 @@ def test_strategy_api_exposes_score_and_readiness_output(client) -> None:
     try:
         _seed_universe(session, asset_class="stock", venue="alpaca", symbols=("AAPL",))
         _seed_stock_ready_symbol(session, symbol="AAPL")
-        _seed_regime(session, asset_class="stock", venue="alpaca", timeframe="1h", regime="bull", entry_policy="full")
-        StrategyWorker(session).build_stock_candidates(timeframe="1h", now=datetime(2026, 3, 14, 15, 0, tzinfo=UTC))
+        _seed_regime(session, asset_class="stock", venue="alpaca", timeframe="5m", regime="bull", entry_policy="full")
+        StrategyWorker(session).build_stock_candidates(timeframe="5m", now=datetime(2026, 3, 14, 15, 0, tzinfo=UTC))
     finally:
         session.close()
 
-    response = client.get("/api/v1/strategy/stock/current", params={"timeframe": "1h"})
+    response = client.get("/api/v1/strategy/stock/current", params={"timeframe": "5m"})
     assert response.status_code == 200
     payload = response.json()
-    assert len(payload) == 3
-    trend_row = next(item for item in payload if item["strategy_name"] == "trend_pullback_long")
-    assert trend_row["symbol"] == "AAPL"
-    assert trend_row["status"] == "ready"
-    assert float(trend_row["readiness_score"]) >= 0.60
-    assert "blocked_reasons" in trend_row
+    assert len(payload) == 1
+    row = payload[0]
+    assert row["strategy_name"] == "htf_reclaim_long"
+    assert row["symbol"] == "AAPL"
+    assert row["status"] == "ready"
+    assert float(row["readiness_score"]) >= 0.65
+    assert "blocked_reasons" in row
 
-    sync_response = client.get("/api/v1/strategy/stock/sync-state", params={"timeframe": "1h"})
+    sync_response = client.get("/api/v1/strategy/stock/sync-state", params={"timeframe": "5m"})
     assert sync_response.status_code == 200
     sync_payload = sync_response.json()
-    assert sync_payload["candidate_count"] == 3
-    assert sync_payload["ready_count"] >= 1
-
+    assert sync_payload["candidate_count"] == 1
+    assert sync_payload["ready_count"] == 1
 
 
 def test_strategy_api_uses_latest_resolved_universe_when_trade_date_is_not_today(client) -> None:
@@ -171,50 +168,48 @@ def test_strategy_api_uses_latest_resolved_universe_when_trade_date_is_not_today
     try:
         _seed_universe(session, asset_class="stock", venue="alpaca", symbols=("AAPL",))
         _seed_stock_ready_symbol(session, symbol="AAPL")
-        _seed_regime(session, asset_class="stock", venue="alpaca", timeframe="1h", regime="bull", entry_policy="full")
-        StrategyWorker(session).build_stock_candidates(timeframe="1h", now=datetime(2026, 3, 14, 15, 0, tzinfo=UTC))
+        _seed_regime(session, asset_class="stock", venue="alpaca", timeframe="5m", regime="bull", entry_policy="full")
+        StrategyWorker(session).build_stock_candidates(timeframe="5m", now=datetime(2026, 3, 14, 15, 0, tzinfo=UTC))
     finally:
         session.close()
 
-    response = client.get("/api/v1/strategy/stock/current", params={"timeframe": "1h"})
+    response = client.get("/api/v1/strategy/stock/current", params={"timeframe": "5m"})
     assert response.status_code == 200
-    assert len(response.json()) == 3
+    assert len(response.json()) == 1
 
 
 def test_strategy_api_returns_empty_list_when_no_current_rows(client) -> None:
-    response = client.get("/api/v1/strategy/stock/current", params={"timeframe": "1h"})
+    response = client.get("/api/v1/strategy/stock/current", params={"timeframe": "5m"})
     assert response.status_code == 200
     assert response.json() == []
-
-
 
 
 def test_strategy_engine_treats_stale_regime_as_unavailable(db_session: Session) -> None:
     _seed_universe(db_session, asset_class="stock", venue="alpaca", symbols=("AAPL",))
     _seed_stock_ready_symbol(db_session, symbol="AAPL")
-    _seed_regime(db_session, asset_class="stock", venue="alpaca", timeframe="1h", regime="bull", entry_policy="full")
+    _seed_regime(db_session, asset_class="stock", venue="alpaca", timeframe="5m", regime="bull", entry_policy="full")
 
-    stale_regime = db_session.query(RegimeSnapshot).filter(RegimeSnapshot.asset_class == "stock", RegimeSnapshot.timeframe == "1h").one()
+    stale_regime = db_session.query(RegimeSnapshot).filter(RegimeSnapshot.asset_class == "stock", RegimeSnapshot.timeframe == "5m").one()
     stale_regime.regime_timestamp = datetime(2026, 3, 14, 12, 30, tzinfo=UTC)
     stale_regime.computed_at = datetime(2026, 3, 14, 12, 35, tzinfo=UTC)
     db_session.commit()
 
     worker = StrategyWorker(db_session)
-    summary = worker.build_stock_candidates(timeframe="1h", now=datetime(2026, 3, 14, 14, 50, tzinfo=UTC))
+    summary = worker.build_stock_candidates(timeframe="5m", now=datetime(2026, 3, 14, 14, 50, tzinfo=UTC))
 
     assert summary.skipped_reason == "regime_stale"
-    rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="1h")
-    assert len(rows) == 3
+    rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="5m")
+    assert len(rows) == 1
     assert all("regime_unavailable" in (row.blocked_reasons or []) for row in rows)
 
-    state = get_strategy_sync_state(db_session, asset_class="stock", timeframe="1h")
+    state = get_strategy_sync_state(db_session, asset_class="stock", timeframe="5m")
     assert state is not None
     assert state.last_status == "regime_stale"
     assert state.last_error == "features_newer_than_regime"
 
+
 def _row(rows, *, symbol: str, strategy_name: str):
     return next(row for row in rows if row.symbol == symbol and row.strategy_name == strategy_name)
-
 
 
 def _seed_universe(db: Session, *, asset_class: str, venue: str, symbols: tuple[str, ...]) -> None:
@@ -240,7 +235,6 @@ def _seed_universe(db: Session, *, asset_class: str, venue: str, symbols: tuple[
         resolved_at=datetime(2026, 3, 14, 9, 0, tzinfo=UTC),
         payload={"seeded": True},
     )
-
 
 
 def _seed_regime(
@@ -274,57 +268,41 @@ def _seed_regime(
     db.commit()
 
 
-
 def _seed_stock_ready_symbol(db: Session, *, symbol: str) -> None:
-    closes = [100, 100.8, 101.4, 102.0, 102.8, 103.6, 104.2, 104.9, 105.5, 106.0, 106.4, 106.8, 107.1, 107.3, 107.5, 107.7, 107.9, 108.1, 108.3, 108.5, 108.6, 108.8, 109.0, 107.8, 110.0]
-    vwaps = [close - 0.4 for close in closes]
-    vwaps[-2] = 108.0
-    vwaps[-1] = 108.7
-    _seed_candles(db, asset_class="stock", venue="alpaca", symbol=symbol, timeframe="1h", closes=closes, vwaps=vwaps)
-    _seed_feature_snapshot(
-        db,
-        asset_class="stock",
-        venue="alpaca",
-        symbol=symbol,
-        timeframe="1h",
-        close=110.0,
-        price_return_1=0.0204,
-        sma=106.0,
-        ema=108.9,
-        momentum=0.030,
-        rv=1.22,
-        dollar_volume=1_500_000,
-        dollar_volume_sma=1_250_000,
-        atr=1.20,
-        vol=0.012,
-        slope=0.012,
-    )
-
+    _seed_stock_context(db, symbol=symbol, blocked=False)
 
 
 def _seed_stock_blocked_symbol(db: Session, *, symbol: str) -> None:
-    closes = [110, 109.5, 109.0, 108.7, 108.4, 108.0, 107.7, 107.4, 107.1, 106.9, 106.7, 106.5, 106.2, 106.0, 105.9, 105.8, 105.7, 105.6, 105.5, 105.4, 105.2, 105.0, 104.8, 104.7, 104.5]
-    vwaps = [close + 0.3 for close in closes]
-    _seed_candles(db, asset_class="stock", venue="alpaca", symbol=symbol, timeframe="1h", closes=closes, vwaps=vwaps)
-    _seed_feature_snapshot(
-        db,
-        asset_class="stock",
-        venue="alpaca",
-        symbol=symbol,
-        timeframe="1h",
-        close=104.5,
-        price_return_1=-0.002,
-        sma=105.8,
-        ema=105.4,
-        momentum=-0.010,
-        rv=0.72,
-        dollar_volume=220_000,
-        dollar_volume_sma=250_000,
-        atr=2.10,
-        vol=0.042,
-        slope=-0.006,
-    )
+    _seed_stock_context(db, symbol=symbol, blocked=True)
 
+
+def _seed_stock_context(db: Session, *, symbol: str, blocked: bool) -> None:
+    if blocked:
+        _seed_price_ladder(db, asset_class="stock", venue="alpaca", symbol=symbol, timeframe="1h", closes=[140 - (i * 0.45) for i in range(150)])
+        _seed_price_ladder(db, asset_class="stock", venue="alpaca", symbol=symbol, timeframe="15m", closes=[90 - (i * 0.10) for i in range(150)])
+        closes_5m = [55.0, 54.8, 54.7, 54.6, 54.55, 54.45, 54.35, 54.30, 54.25, 54.20, 54.18, 54.15]
+        vwaps_5m = [54.9, 54.8, 54.75, 54.7, 54.65, 54.6, 54.55, 54.50, 54.45, 54.4, 54.35, 54.32]
+        opens_5m = [55.1, 54.9, 54.8, 54.72, 54.66, 54.52, 54.42, 54.36, 54.31, 54.28, 54.24, 54.22]
+        lows_5m = [54.8, 54.7, 54.62, 54.55, 54.48, 54.4, 54.32, 54.25, 54.2, 54.15, 54.1, 54.08]
+        _seed_candles(db, asset_class="stock", venue="alpaca", symbol=symbol, timeframe="5m", closes=closes_5m, vwaps=vwaps_5m, opens=opens_5m, lows=lows_5m, step_minutes=5)
+        _seed_feature_snapshot(db, asset_class="stock", venue="alpaca", symbol=symbol, timeframe="5m", close=54.15, price_return_1=-0.001, sma=54.4, ema=54.3, momentum=-0.005, rv=0.85, dollar_volume=300_000, dollar_volume_sma=320_000, atr=0.45, vol=0.03, slope=-0.003)
+    else:
+        _seed_price_ladder(db, asset_class="stock", venue="alpaca", symbol=symbol, timeframe="1h", closes=[100 + (i * 0.35) for i in range(150)])
+        _seed_price_ladder(db, asset_class="stock", venue="alpaca", symbol=symbol, timeframe="15m", closes=[70 + (i * 0.12) for i in range(150)])
+        closes_5m = [107.2, 107.4, 107.6, 107.8, 108.0, 108.2, 108.35, 108.15, 108.05, 108.22, 108.18, 108.48]
+        vwaps_5m = [107.0, 107.15, 107.3, 107.45, 107.6, 107.82, 108.0, 108.12, 108.08, 108.1, 108.11, 108.2]
+        opens_5m = [107.05, 107.2, 107.35, 107.55, 107.75, 108.0, 108.2, 108.3, 108.12, 108.08, 108.16, 108.18]
+        lows_5m = [106.95, 107.1, 107.25, 107.4, 107.58, 107.8, 108.05, 108.0, 107.98, 108.02, 108.05, 108.14]
+        _seed_candles(db, asset_class="stock", venue="alpaca", symbol=symbol, timeframe="5m", closes=closes_5m, vwaps=vwaps_5m, opens=opens_5m, lows=lows_5m, step_minutes=5)
+        _seed_feature_snapshot(db, asset_class="stock", venue="alpaca", symbol=symbol, timeframe="5m", close=108.48, price_return_1=0.006, sma=108.1, ema=108.2, momentum=0.02, rv=1.25, dollar_volume=1_800_000, dollar_volume_sma=1_500_000, atr=0.42, vol=0.012, slope=0.01)
+
+
+def _seed_price_ladder(db: Session, *, asset_class: str, venue: str, symbol: str, timeframe: str, closes: list[float]) -> None:
+    step_minutes = {"1h": 60, "15m": 15}.get(timeframe, 5)
+    vwaps = [close - 0.15 for close in closes]
+    opens = [close - 0.12 for close in closes]
+    lows = [close - 0.3 for close in closes]
+    _seed_candles(db, asset_class=asset_class, venue=venue, symbol=symbol, timeframe=timeframe, closes=closes, vwaps=vwaps, opens=opens, lows=lows, step_minutes=step_minutes)
 
 
 def _seed_crypto_ready_symbol(db: Session, *, symbol: str) -> None:
@@ -332,7 +310,7 @@ def _seed_crypto_ready_symbol(db: Session, *, symbol: str) -> None:
     vwaps = [close - 120 for close in closes]
     vwaps[-2] = 30370
     vwaps[-1] = 30410
-    _seed_candles(db, asset_class="crypto", venue="kraken", symbol=symbol, timeframe="1h", closes=closes, vwaps=vwaps)
+    _seed_candles(db, asset_class="crypto", venue="kraken", symbol=symbol, timeframe="1h", closes=closes, vwaps=vwaps, opens=[c - 80 for c in closes], lows=[c - 150 for c in closes], step_minutes=60)
     _seed_feature_snapshot(
         db,
         asset_class="crypto",
@@ -351,7 +329,6 @@ def _seed_crypto_ready_symbol(db: Session, *, symbol: str) -> None:
         vol=0.025,
         slope=0.015,
     )
-
 
 
 def _seed_feature_snapshot(
@@ -401,7 +378,6 @@ def _seed_feature_snapshot(
     db.commit()
 
 
-
 def _seed_candles(
     db: Session,
     *,
@@ -411,6 +387,9 @@ def _seed_candles(
     timeframe: str,
     closes: list[float],
     vwaps: list[float],
+    opens: list[float],
+    lows: list[float],
+    step_minutes: int,
 ) -> None:
     start = datetime(2026, 3, 13, 13, 30, tzinfo=UTC)
     for index, close in enumerate(closes):
@@ -420,10 +399,10 @@ def _seed_candles(
             source="test_seed",
             symbol=symbol,
             timeframe=timeframe,
-            timestamp=start + timedelta(hours=index),
-            open=Decimal(str(close - 0.6)),
-            high=Decimal(str(close + 0.9)),
-            low=Decimal(str(close - 1.1)),
+            timestamp=start + timedelta(minutes=step_minutes * index),
+            open=Decimal(str(opens[index])),
+            high=Decimal(str(close + 0.4 if asset_class == "stock" else close + 140)),
+            low=Decimal(str(lows[index])),
             close=Decimal(str(close)),
             volume=Decimal(str(1000 + (index * 50))),
             vwap=Decimal(str(vwaps[index])),

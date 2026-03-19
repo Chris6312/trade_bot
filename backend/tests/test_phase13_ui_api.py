@@ -150,7 +150,7 @@ def test_phase13_controls_expand_to_configured_timeframes_when_unspecified(clien
         lambda: SimpleNamespace(
             stock_feature_timeframe_list=["1h", "15m", "5m", "1d"],
             crypto_feature_timeframe_list=["4h", "1h", "15m", "1d"],
-            stock_strategy_timeframe_list=["1h", "15m", "5m"],
+            stock_strategy_timeframe_list=["5m"],
             crypto_strategy_timeframe_list=["4h", "1h", "15m"],
             execution_kill_switch_enabled=False,
             default_mode="mixed",
@@ -170,5 +170,5 @@ def test_phase13_controls_expand_to_configured_timeframes_when_unspecified(clien
 
     strategy_response = client.post("/api/v1/controls/strategy/run-once", json={"asset_class": "stock"})
     assert strategy_response.status_code == 200
-    assert seen_strategy_timeframes == ["1h", "15m", "5m"]
-    assert [item["timeframe"] for item in strategy_response.json()["details"]] == ["1h", "15m", "5m"]
+    assert seen_strategy_timeframes == ["5m"]
+    assert [item["timeframe"] for item in strategy_response.json()["details"]] == ["5m"]

@@ -154,16 +154,15 @@ def test_stock_universe_uses_persisted_settings_without_restart(db_session: Sess
 
 
 def test_strategy_toggle_setting_blocks_runtime_candidates(db_session: Session) -> None:
-    _seed_regime(db_session, asset_class="stock", venue="alpaca", timeframe="1h", regime="bull", entry_policy="full")
-    _seed_feature(db_session, asset_class="stock", symbol="AAPL", close=Decimal("100"), atr=Decimal("0.2"))
+    _seed_regime(db_session, asset_class="stock", venue="alpaca", timeframe="5m", regime="bull", entry_policy="full")
     _seed_stock_strategy_input(db_session, symbol="AAPL")
-    db_session.add(Setting(key="strategy_enabled.stock.trend_pullback_long", value="false", value_type="bool"))
+    db_session.add(Setting(key="strategy_enabled.stock.htf_reclaim_long", value="false", value_type="bool"))
     db_session.commit()
 
-    summary = StrategyWorker(db_session).build_stock_candidates(timeframe="1h", now=datetime(2026, 3, 14, 17, 5, tzinfo=UTC))
+    summary = StrategyWorker(db_session).build_stock_candidates(timeframe="5m", now=datetime(2026, 3, 14, 17, 5, tzinfo=UTC))
 
-    assert summary.evaluated_rows == 3
-    row = next(row for row in list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="1h") if row.strategy_name == "trend_pullback_long")
+    assert summary.evaluated_rows == 1
+    row = next(row for row in list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="5m") if row.strategy_name == "htf_reclaim_long")
     assert row.status == "blocked"
     assert "strategy_disabled" in (row.blocked_reasons or [])
 
@@ -293,25 +292,77 @@ def _seed_feature(db: Session, *, asset_class: str, symbol: str, close: Decimal,
 
 def _seed_stock_strategy_input(db: Session, *, symbol: str) -> None:
     _seed_universe(db, asset_class="stock", venue="alpaca", symbols=(symbol,))
-    closes = [100, 100.8, 101.4, 102.0, 102.8, 103.6, 104.2, 104.9, 105.5, 106.0, 106.4, 106.8, 107.1, 107.3, 107.5, 107.7, 107.9, 108.1, 108.3, 108.5, 108.6, 108.8, 109.0, 107.8, 110.0]
-    for index, close in enumerate(closes):
+
+    def _seed_series(timeframe: str, closes: list[float], *, step_minutes: int) -> None:
+        for index, close in enumerate(closes):
+            db.add(
+                Candle(
+                    asset_class="stock",
+                    venue="alpaca",
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    source="test",
+                    timestamp=datetime(2026, 3, 13, 16, 0, tzinfo=UTC) + timedelta(minutes=step_minutes * index),
+                    open=Decimal(str(close - 0.1)),
+                    high=Decimal(str(close + 0.25)),
+                    low=Decimal(str(close - 0.25)),
+                    close=Decimal(str(close)),
+                    volume=Decimal(str(1000 + (index * 50))),
+                    vwap=Decimal(str(close - 0.08)),
+                    trade_count=100 + index,
+                )
+            )
+
+    _seed_series("1h", [100 + (i * 0.35) for i in range(150)], step_minutes=60)
+    _seed_series("15m", [70 + (i * 0.12) for i in range(150)], step_minutes=15)
+    closes_5m = [107.2, 107.4, 107.6, 107.8, 108.0, 108.2, 108.35, 108.15, 108.05, 108.22, 108.18, 108.48]
+    vwaps_5m = [107.0, 107.15, 107.3, 107.45, 107.6, 107.82, 108.0, 108.12, 108.08, 108.1, 108.11, 108.2]
+    lows_5m = [106.95, 107.1, 107.25, 107.4, 107.58, 107.8, 108.05, 108.0, 107.98, 108.02, 108.05, 108.14]
+    opens_5m = [107.05, 107.2, 107.35, 107.55, 107.75, 108.0, 108.2, 108.3, 108.12, 108.08, 108.16, 108.18]
+    start = datetime(2026, 3, 14, 14, 0, tzinfo=UTC)
+    for index, close in enumerate(closes_5m):
         db.add(
             Candle(
                 asset_class="stock",
                 venue="alpaca",
                 symbol=symbol,
-                timeframe="1h",
+                timeframe="5m",
                 source="test",
-                timestamp=datetime(2026, 3, 13, 16, 0, tzinfo=UTC) + timedelta(hours=index),
-                open=Decimal(str(close - 0.4)),
-                high=Decimal(str(close + 0.6)),
-                low=Decimal(str(close - 0.7)),
+                timestamp=start + timedelta(minutes=5 * index),
+                open=Decimal(str(opens_5m[index])),
+                high=Decimal(str(close + 0.22)),
+                low=Decimal(str(lows_5m[index])),
                 close=Decimal(str(close)),
-                volume=Decimal(str(1000 + (index * 50))),
-                vwap=Decimal(str(close - 0.2)),
-                trade_count=100 + index,
+                volume=Decimal(str(1800 + (index * 80))),
+                vwap=Decimal(str(vwaps_5m[index])),
+                trade_count=200 + index,
             )
         )
+    db.add(
+        FeatureSnapshot(
+            asset_class="stock",
+            venue="alpaca",
+            source="test",
+            symbol=symbol,
+            timeframe="5m",
+            candle_timestamp=datetime(2026, 3, 14, 14, 55, tzinfo=UTC),
+            computed_at=datetime(2026, 3, 14, 14, 55, tzinfo=UTC),
+            close=Decimal("108.48"),
+            volume=Decimal("250000"),
+            price_return_1=Decimal("0.006"),
+            sma_20=Decimal("108.10"),
+            ema_20=Decimal("108.20"),
+            momentum_20=Decimal("0.020"),
+            volume_sma_20=Decimal("220000"),
+            relative_volume_20=Decimal("1.20"),
+            dollar_volume=Decimal("1800000"),
+            dollar_volume_sma_20=Decimal("1500000"),
+            atr_14=Decimal("0.42"),
+            realized_volatility_20=Decimal("0.012"),
+            trend_slope_20=Decimal("0.010"),
+            payload={"seeded": True},
+        )
+    )
     db.commit()
 
 

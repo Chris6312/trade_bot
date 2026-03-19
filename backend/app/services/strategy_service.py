@@ -10,7 +10,6 @@ from backend.app.common.strategy_support import (
     StrategyEvaluationInput,
     StrategyOutcome,
     candidate_timestamp,
-    default_component_scores,
     ensure_utc,
 )
 from backend.app.crypto.strategies import CRYPTO_STRATEGIES
@@ -22,6 +21,7 @@ from backend.app.stocks.strategies import STOCK_STRATEGIES
 SINGLE_STRATEGY_WRITER = "strategy_worker"
 STRATEGY_SOURCE = "strategy_engine"
 VALID_ASSET_CLASSES = {"stock", "crypto"}
+_HTF_RECLAIM_LONG_NAME = "htf_reclaim_long"
 
 
 @dataclass(slots=True, frozen=True)
@@ -219,22 +219,40 @@ def rebuild_strategy_snapshots_for_asset_class(
 
     rows: list[ComputedStrategyRow] = []
     symbols_with_features = 0
+    context_timeframes = _context_timeframes(asset_class=asset_class, timeframe=timeframe)
+    candle_limits = _context_candle_limits(asset_class=asset_class)
+
     for symbol in requested_symbols:
         feature = _latest_feature_snapshot(db, asset_class=asset_class, symbol=symbol, timeframe=timeframe)
-        candles = tuple(_recent_candles(db, asset_class=asset_class, symbol=symbol, timeframe=timeframe, limit=60))
+        candles_by_timeframe = {
+            tf: tuple(
+                _recent_candles(
+                    db,
+                    asset_class=asset_class,
+                    symbol=symbol,
+                    timeframe=tf,
+                    limit=candle_limits.get(tf, 80),
+                )
+            )
+            for tf in context_timeframes
+        }
+        candles = candles_by_timeframe.get(timeframe, ())
         if feature is not None:
             symbols_with_features += 1
-        evaluation_input = StrategyEvaluationInput(
-            asset_class=asset_class,
-            venue=venue,
-            symbol=symbol,
-            timeframe=timeframe,
-            feature_snapshot=feature,
-            regime_snapshot=regime,
-            candles=candles,
-            computed_at=computed_time,
-        )
+
         for definition in definitions:
+            evaluation_input = StrategyEvaluationInput(
+                asset_class=asset_class,
+                venue=venue,
+                symbol=symbol,
+                timeframe=timeframe,
+                feature_snapshot=feature,
+                regime_snapshot=regime,
+                candles=candles,
+                computed_at=computed_time,
+                candles_by_timeframe=candles_by_timeframe,
+                strategy_config=_load_strategy_config(db, asset_class=asset_class, strategy_name=definition.name),
+            )
             outcome = definition.evaluator(evaluation_input)
             enabled = is_strategy_enabled(db, asset_class=asset_class, strategy_name=definition.name, default=True)
             if not enabled:
@@ -491,3 +509,59 @@ def _upsert_strategy_sync_state(
     record.last_status = last_status
     record.last_error = last_error
     return record
+
+
+def _context_timeframes(*, asset_class: str, timeframe: str) -> tuple[str, ...]:
+    if asset_class == "stock":
+        return tuple(dict.fromkeys((timeframe, "1h", "15m", "5m")))
+    return (timeframe,)
+
+
+def _context_candle_limits(*, asset_class: str) -> dict[str, int]:
+    if asset_class == "stock":
+        return {"1h": 250, "15m": 250, "5m": 120}
+    return {}
+
+
+def _load_strategy_config(db: Session, *, asset_class: str, strategy_name: str) -> dict[str, Any]:
+    if asset_class == "stock" and strategy_name == _HTF_RECLAIM_LONG_NAME:
+        return {
+            "bias": {
+                "timeframe": "1h",
+                "fast_ma_type": _resolve_str_setting(db, "strategy.stock.htf_reclaim_long.1h.fast_ma_type", default="sma"),
+                "fast_ma_length": _resolve_int_setting(db, "strategy.stock.htf_reclaim_long.1h.fast_ma_length", default=60),
+                "slow_ma_type": _resolve_str_setting(db, "strategy.stock.htf_reclaim_long.1h.slow_ma_type", default="sma"),
+                "slow_ma_length": _resolve_int_setting(db, "strategy.stock.htf_reclaim_long.1h.slow_ma_length", default=100),
+            },
+            "setup": {
+                "timeframe": "15m",
+                "fast_ma_type": _resolve_str_setting(db, "strategy.stock.htf_reclaim_long.15m.fast_ma_type", default="sma"),
+                "fast_ma_length": _resolve_int_setting(db, "strategy.stock.htf_reclaim_long.15m.fast_ma_length", default=30),
+                "slow_ma_type": _resolve_str_setting(db, "strategy.stock.htf_reclaim_long.15m.slow_ma_type", default="sma"),
+                "slow_ma_length": _resolve_int_setting(db, "strategy.stock.htf_reclaim_long.15m.slow_ma_length", default=80),
+            },
+            "trigger": {
+                "timeframe": "5m",
+                "ema_length": _resolve_int_setting(db, "strategy.stock.htf_reclaim_long.5m.trigger_ema_length", default=9),
+                "pullback_lookback_bars": _resolve_int_setting(db, "strategy.stock.htf_reclaim_long.5m.pullback_lookback_bars", default=3),
+            },
+        }
+    return {}
+
+
+def _resolve_str_setting(db: Session, key: str, *, default: str) -> str:
+    record = get_setting(db, key=key)
+    if record is None or not str(record.value).strip():
+        return default
+    return str(record.value).strip().lower()
+
+
+def _resolve_int_setting(db: Session, key: str, *, default: int) -> int:
+    record = get_setting(db, key=key)
+    if record is None:
+        return default
+    try:
+        value = int(str(record.value).strip())
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default

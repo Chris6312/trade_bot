@@ -282,8 +282,6 @@ function Invoke-StartupPipeline {
         @{ asset_class = 'crypto'; timeframe = '1d' }
     )
     $strategyPayloads = @(
-        @{ asset_class = 'stock'; timeframe = '1h' }
-        @{ asset_class = 'stock'; timeframe = '15m' }
         @{ asset_class = 'stock'; timeframe = '5m' }
         @{ asset_class = 'crypto'; timeframe = '4h' }
         @{ asset_class = 'crypto'; timeframe = '1h' }

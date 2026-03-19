@@ -15,9 +15,7 @@ It covers:
 The bot currently supports these initial strategies:
 
 ### Stocks
-- `trend_pullback_long`
-- `vwap_reclaim_long`
-- `opening_range_breakout_long`
+- `htf_reclaim_long`
 
 ### Crypto
 - `trend_continuation_long`
@@ -646,9 +644,7 @@ If you want the strategy drawer to feel crisp and operator-friendly, this langua
 
 | Strategy | Asset | Style | Base threshold | Primary idea |
 |---|---|---:|---:|---|
-| `trend_pullback_long` | Stock | Trend pullback | 0.60 | Uptrend pulling back toward EMA 20 |
-| `vwap_reclaim_long` | Stock | VWAP reclaim | 0.59 | Fresh reclaim above VWAP with trend support |
-| `opening_range_breakout_long` | Stock | Breakout | 0.64 | Break above recent 5-candle high |
+| `htf_reclaim_long` | Stock | HTF context + 5m reclaim | 0.65 | 1h bias pass, 15m setup pass, then fresh 5m VWAP and EMA9 reclaim |
 | `trend_continuation_long` | Crypto | Trend continuation | 0.61 | Strong trend, not overextended |
 | `vwap_reclaim_long` | Crypto | VWAP reclaim | 0.58 | Fresh reclaim above VWAP |
 | `breakout_long` | Crypto | Breakout | 0.62 | Break above recent 10-candle high |

@@ -117,43 +117,43 @@ def test_phase16_worker_dependency_order_requires_features_and_regime_before_rou
     _seed_stock_accounts(db_session)
 
     strategy_before = StrategyWorker(db_session).build_stock_candidates(
-        timeframe="1h",
+        timeframe="5m",
         now=PHASE16_STRATEGY_BEFORE_NOW,
     )
     assert strategy_before.ready_rows == 0
     assert strategy_before.skipped_reason == "regime_unavailable"
-    pre_rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="1h")
+    pre_rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="5m")
     assert all("missing_feature_snapshot" in (row.blocked_reasons or []) for row in pre_rows)
 
     feature_summary = FeatureWorker(db_session).build_stock_features(
-        timeframe="1h",
+        timeframe="5m",
         now=PHASE16_FEATURE_NOW,
     )
     assert feature_summary.computed_snapshots > 0
 
     strategy_without_regime = StrategyWorker(db_session).build_stock_candidates(
-        timeframe="1h",
+        timeframe="5m",
         now=PHASE16_STRATEGY_MID_NOW,
     )
     assert strategy_without_regime.ready_rows == 0
     assert strategy_without_regime.skipped_reason == "regime_unavailable"
-    mid_rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="1h")
+    mid_rows = list_current_strategy_snapshots(db_session, asset_class="stock", timeframe="5m")
     assert any("regime_unavailable" in (row.blocked_reasons or []) for row in mid_rows)
 
     regime_summary = RegimeWorker(db_session).build_stock_regime(
-        timeframe="1h",
+        timeframe="5m",
         now=PHASE16_REGIME_NOW,
     )
     assert regime_summary.regime == "bull"
 
     strategy_after = StrategyWorker(db_session).build_stock_candidates(
-        timeframe="1h",
+        timeframe="5m",
         now=PHASE16_STRATEGY_READY_NOW,
     )
     assert strategy_after.ready_rows >= 1
 
     risk_summary = RiskWorker(db_session).build_stock_risk(
-        timeframe="1h",
+        timeframe="5m",
         now=PHASE16_RISK_NOW,
     )
     assert risk_summary.accepted_count == 1
@@ -162,57 +162,57 @@ def test_phase16_worker_dependency_order_requires_features_and_regime_before_rou
     execution_summary = ExecutionWorker(
         db_session,
         adapter_resolver=_mapping_resolver({"alpaca_stock_paper": adapter}),
-    ).route_stock_orders(timeframe="1h", now=PHASE16_EXECUTION_NOW)
+    ).route_stock_orders(timeframe="5m", now=PHASE16_EXECUTION_NOW)
 
     assert execution_summary.routed_count == 1
     assert execution_summary.fill_count == 1
     assert len(adapter.requests) == 1
-    orders = list_current_execution_orders(db_session, asset_class="stock", timeframe="1h")
+    orders = list_current_execution_orders(db_session, asset_class="stock", timeframe="5m")
     assert len(orders) == 1
     assert orders[0].status == "filled"
 
 
 def test_phase16_stock_paper_trade_chain_reaches_stop_and_position_sync(db_session: Session) -> None:
-    _run_stock_chain(db_session)
+    executed_quantity = _run_stock_chain(db_session)
 
     _append_stock_price(db_session, symbol="AAPL", close=Decimal("111"), timestamp=PHASE16_APPEND_PRICE_AT)
     stop_summary = StopWorker(db_session).manage_stock_stops(
-        timeframe="1h",
+        timeframe="5m",
         now=PHASE16_STOP_NOW,
     )
     assert stop_summary.created_count == 1
-    stop_rows = list_current_stop_states(db_session, asset_class="stock", timeframe="1h")
+    stop_rows = list_current_stop_states(db_session, asset_class="stock", timeframe="5m")
     assert len(stop_rows) == 1
     assert stop_rows[0].status in {"protected", "synced", "virtual_synced"}
 
-    sync_adapter = RecordingPositionSyncAdapter(price=Decimal("111"), quantity=Decimal("4"))
+    sync_adapter = RecordingPositionSyncAdapter(price=Decimal("111"), quantity=executed_quantity)
     position_summary = PositionWorker(
         db_session,
         adapter_resolver=_mapping_resolver({"alpaca_stock_paper": sync_adapter}),
-    ).sync_stock_positions(timeframe="1h", now=PHASE16_POSITION_NOW)
+    ).sync_stock_positions(timeframe="5m", now=PHASE16_POSITION_NOW)
 
     assert position_summary.position_count == 1
     assert position_summary.mismatch_count == 0
     assert sync_adapter.closed is True
-    positions = list_current_position_states(db_session, asset_class="stock", timeframe="1h")
+    positions = list_current_position_states(db_session, asset_class="stock", timeframe="5m")
     assert len(positions) == 1
     assert positions[0].symbol == "AAPL"
     assert positions[0].reconciliation_status == "matched"
-    assert positions[0].unrealized_pnl == Decimal("4")
+    assert positions[0].unrealized_pnl == executed_quantity
 
 
 def test_phase16_operator_ui_smoke_routes_cover_core_control_surfaces(client) -> None:
     session = get_session_factory()()
     try:
-        _run_stock_chain(session)
+        executed_quantity = _run_stock_chain(session)
         _append_stock_price(session, symbol="AAPL", close=Decimal("111"), timestamp=PHASE16_APPEND_PRICE_AT)
-        StopWorker(session).manage_stock_stops(timeframe="1h", now=PHASE16_STOP_NOW)
+        StopWorker(session).manage_stock_stops(timeframe="5m", now=PHASE16_STOP_NOW)
         PositionWorker(
             session,
             adapter_resolver=_mapping_resolver(
-                {"alpaca_stock_paper": RecordingPositionSyncAdapter(price=Decimal("111"), quantity=Decimal("4"))}
+                {"alpaca_stock_paper": RecordingPositionSyncAdapter(price=Decimal("111"), quantity=executed_quantity)}
             ),
-        ).sync_stock_positions(timeframe="1h", now=PHASE16_POSITION_NOW)
+        ).sync_stock_positions(timeframe="5m", now=PHASE16_POSITION_NOW)
         session.add(SystemEvent(event_type="phase16.smoke", severity="info", message="operator smoke seeded", event_source="tests"))
         session.commit()
     finally:
@@ -225,11 +225,11 @@ def test_phase16_operator_ui_smoke_routes_cover_core_control_surfaces(client) ->
         "universe": client.get("/api/v1/universe/stock/current"),
         "candle_sync": client.get("/api/v1/data/candles/stock/sync-state"),
         "feature_sync": client.get("/api/v1/data/features/stock/sync-state"),
-        "strategy": client.get("/api/v1/strategy/stock/current", params={"timeframe": "1h"}),
-        "risk": client.get("/api/v1/risk/stock/current", params={"timeframe": "1h"}),
-        "execution": client.get("/api/v1/execution/stock/current", params={"timeframe": "1h"}),
-        "stops": client.get("/api/v1/stops/stock/current", params={"timeframe": "1h"}),
-        "positions": client.get("/api/v1/positions/stock/current", params={"timeframe": "1h"}),
+        "strategy": client.get("/api/v1/strategy/stock/current", params={"timeframe": "5m"}),
+        "risk": client.get("/api/v1/risk/stock/current", params={"timeframe": "5m"}),
+        "execution": client.get("/api/v1/execution/stock/current", params={"timeframe": "5m"}),
+        "stops": client.get("/api/v1/stops/stock/current", params={"timeframe": "5m"}),
+        "positions": client.get("/api/v1/positions/stock/current", params={"timeframe": "5m"}),
         "account": client.get("/api/v1/account-snapshots/latest/stock"),
         "events": client.get("/api/v1/system-events"),
     }
@@ -250,18 +250,22 @@ def test_phase16_operator_ui_smoke_routes_cover_core_control_surfaces(client) ->
     assert responses["events"].json()[0]["event_type"] == "phase16.smoke"
 
 
-def _run_stock_chain(db: Session) -> None:
+def _run_stock_chain(db: Session) -> Decimal:
     _seed_stock_universe(db, symbols=("AAPL",))
     _seed_stock_ready_candles(db, symbol="AAPL")
     _seed_stock_accounts(db)
-    FeatureWorker(db).build_stock_features(timeframe="1h", now=PHASE16_FEATURE_NOW)
-    RegimeWorker(db).build_stock_regime(timeframe="1h", now=PHASE16_REGIME_NOW)
-    StrategyWorker(db).build_stock_candidates(timeframe="1h", now=PHASE16_STRATEGY_READY_NOW)
-    RiskWorker(db).build_stock_risk(timeframe="1h", now=PHASE16_RISK_NOW)
+    FeatureWorker(db).build_stock_features(timeframe="5m", now=PHASE16_FEATURE_NOW)
+    RegimeWorker(db).build_stock_regime(timeframe="5m", now=PHASE16_REGIME_NOW)
+    StrategyWorker(db).build_stock_candidates(timeframe="5m", now=PHASE16_STRATEGY_READY_NOW)
+    RiskWorker(db).build_stock_risk(timeframe="5m", now=PHASE16_RISK_NOW)
     ExecutionWorker(
         db,
         adapter_resolver=_mapping_resolver({"alpaca_stock_paper": RecordingExecutionAdapter(fill_price=Decimal("110"))}),
-    ).route_stock_orders(timeframe="1h", now=PHASE16_EXECUTION_NOW)
+    ).route_stock_orders(timeframe="5m", now=PHASE16_EXECUTION_NOW)
+
+    orders = list_current_execution_orders(db, asset_class="stock", timeframe="5m")
+    assert len(orders) == 1
+    return orders[0].quantity
 
 
 def _seed_stock_universe(db: Session, *, symbols: tuple[str, ...]) -> None:
@@ -303,27 +307,64 @@ def _phase16_trade_dates() -> tuple[date, ...]:
 
 
 def _seed_stock_ready_candles(db: Session, *, symbol: str) -> None:
-    closes = [100, 100.8, 101.4, 102.0, 102.8, 103.6, 104.2, 104.9, 105.5, 106.0, 106.4, 106.8, 107.1, 107.3, 107.5, 107.7, 107.9, 108.1, 108.3, 108.5, 108.6, 108.8, 109.0, 107.8, 110.0]
-    vwaps = [close - 0.4 for close in closes]
-    vwaps[-2] = 108.0
-    vwaps[-1] = 108.7
-    start = datetime(2026, 3, 13, 13, 30, tzinfo=UTC)
-    for index, close in enumerate(closes):
+    def _seed_series(timeframe: str, closes: list[float], *, step_minutes: int) -> None:
+        start = datetime(2026, 3, 13, 13, 30, tzinfo=UTC)
+        for index, close in enumerate(closes):
+            db.add(
+                Candle(
+                    asset_class="stock",
+                    venue="alpaca",
+                    source="phase16_seed",
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    timestamp=start + timedelta(minutes=step_minutes * index),
+                    open=Decimal(str(close - 0.12)),
+                    high=Decimal(str(close + 0.32)),
+                    low=Decimal(str(close - 0.30)),
+                    close=Decimal(str(close)),
+                    volume=Decimal(str(1000 + (index * 50))),
+                    vwap=Decimal(str(close - 0.15)),
+                    trade_count=100 + index,
+                )
+            )
+
+    _seed_series("1h", [100 + (i * 0.35) for i in range(150)], step_minutes=60)
+    _seed_series("15m", [70 + (i * 0.12) for i in range(150)], step_minutes=15)
+
+    closes_5m = [round(104.8 + (i * 0.18), 2) for i in range(13)] + [
+        107.2,
+        107.4,
+        107.6,
+        107.8,
+        108.0,
+        108.2,
+        108.35,
+        108.15,
+        108.05,
+        108.22,
+        108.18,
+        108.48,
+    ]
+    start_5m = datetime(2026, 3, 14, 14, 0, tzinfo=UTC)
+    for index, close in enumerate(closes_5m):
+        open_price = round(close - 0.15, 2)
+        low_price = round(close - 0.30, 2)
+        vwap_price = round(close - 0.15, 2)
         db.add(
             Candle(
                 asset_class="stock",
                 venue="alpaca",
                 source="phase16_seed",
                 symbol=symbol,
-                timeframe="1h",
-                timestamp=start + timedelta(hours=index),
-                open=Decimal(str(close - 0.6)),
-                high=Decimal(str(close + 0.9)),
-                low=Decimal(str(close - 1.1)),
+                timeframe="5m",
+                timestamp=start_5m + timedelta(minutes=5 * index),
+                open=Decimal(str(open_price)),
+                high=Decimal(str(round(close + 0.22, 2))),
+                low=Decimal(str(low_price)),
                 close=Decimal(str(close)),
-                volume=Decimal(str(1000 + (index * 50))),
-                vwap=Decimal(str(vwaps[index])),
-                trade_count=100 + index,
+                volume=Decimal(str(1800 + (index * 80))),
+                vwap=Decimal(str(vwap_price)),
+                trade_count=200 + index,
             )
         )
     db.commit()
@@ -336,7 +377,7 @@ def _append_stock_price(db: Session, *, symbol: str, close: Decimal, timestamp: 
             venue="alpaca",
             source="phase16_seed",
             symbol=symbol,
-            timeframe="1h",
+            timeframe="5m",
             timestamp=timestamp,
             open=close - Decimal("0.4"),
             high=close + Decimal("0.6"),

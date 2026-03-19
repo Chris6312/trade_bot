@@ -412,7 +412,8 @@ def _evaluate_strategy_row(
     if entry_price is None or entry_price <= 0:
         blocked_reasons.append("entry_price_unavailable")
 
-    stop_distance = _derive_stop_distance(asset_class=strategy_row.asset_class, entry_price=entry_price, atr=atr)
+    use_contract_fixed_exits = strategy_row.asset_class == "stock" and strategy_row.strategy_name == "htf_reclaim_long"
+    stop_distance = _derive_stop_distance(asset_class=strategy_row.asset_class, strategy_name=strategy_row.strategy_name, entry_price=entry_price, atr=atr)
     stop_price = (entry_price - stop_distance) if entry_price is not None and stop_distance is not None else None
     stop_distance_pct = (stop_distance / entry_price) if entry_price and stop_distance is not None and entry_price > 0 else None
     if stop_distance is None or stop_distance <= 0:
@@ -426,39 +427,45 @@ def _evaluate_strategy_row(
     # always capture take_profit_price so execution can submit bracket orders.
     _strat_payload: dict[str, Any] = strategy_row.payload or {}
     take_profit_price: float | None = None
-    _ai_sl = _float_or_none(_strat_payload.get("ai_stop_loss"))
-    _ai_tp = _float_or_none(_strat_payload.get("ai_take_profit_primary"))
-    if _ai_sl is not None and entry_price is not None and 0 < _ai_sl < entry_price:
-        # Replace ATR stop only when AI level is tighter or equal (safer).
-        _ai_stop_dist = entry_price - _ai_sl
-        _ai_stop_pct  = _ai_stop_dist / entry_price
-        if _ai_stop_pct <= 0.06:  # cap at 6 % — sanity guard
-            stop_price       = _ai_sl
-            stop_distance    = _ai_stop_dist
-            stop_distance_pct = _ai_stop_pct
-            payload["ai_stop_override"] = True
-    if _ai_tp is not None and entry_price is not None and _ai_tp > entry_price:
-        take_profit_price = _ai_tp
-        payload["ai_take_profit_primary"] = str(_ai_tp)
-    _ai_tp_stretch = _float_or_none(_strat_payload.get("ai_take_profit_stretch"))
-    if _ai_tp_stretch is not None:
-        payload["ai_take_profit_stretch"] = str(_ai_tp_stretch)
-    if _strat_payload.get("ai_use_trail_stop"):
-        payload["ai_use_trail_stop"] = True
+    if use_contract_fixed_exits:
+        payload["paper_contract_fixed_exit"] = True
+        payload["paper_contract_rr_ratio"] = 1.5
+        if stop_distance is not None and entry_price is not None:
+            take_profit_price = round(entry_price + (1.5 * stop_distance), 8)
+    else:
+        _ai_sl = _float_or_none(_strat_payload.get("ai_stop_loss"))
+        _ai_tp = _float_or_none(_strat_payload.get("ai_take_profit_primary"))
+        if _ai_sl is not None and entry_price is not None and 0 < _ai_sl < entry_price:
+            # Replace ATR stop only when AI level is tighter or equal (safer).
+            _ai_stop_dist = entry_price - _ai_sl
+            _ai_stop_pct  = _ai_stop_dist / entry_price
+            if _ai_stop_pct <= 0.06:  # cap at 6 % — sanity guard
+                stop_price       = _ai_sl
+                stop_distance    = _ai_stop_dist
+                stop_distance_pct = _ai_stop_pct
+                payload["ai_stop_override"] = True
+        if _ai_tp is not None and entry_price is not None and _ai_tp > entry_price:
+            take_profit_price = _ai_tp
+            payload["ai_take_profit_primary"] = str(_ai_tp)
+        _ai_tp_stretch = _float_or_none(_strat_payload.get("ai_take_profit_stretch"))
+        if _ai_tp_stretch is not None:
+            payload["ai_take_profit_stretch"] = str(_ai_tp_stretch)
+        if _strat_payload.get("ai_use_trail_stop"):
+            payload["ai_use_trail_stop"] = True
 
-    # --- Fallback TP: ATR-derived 2:1 reward when no AI pick exists ---
-    # When the universe came from the screener fallback, there is no AI
-    # take-profit level.  Synthesise one at 2× the stop distance so the
-    # execution layer can still submit a bracket order and the stop_worker
-    # has a clear exit target.  Only applied when:
-    #   - take_profit_price is still None (AI didn't provide one)
-    #   - stop_distance is valid (ATR-derived stop succeeded)
-    #   - entry_price is known
-    _FALLBACK_RR = 2.0  # reward-to-risk ratio for fallback universe
-    if take_profit_price is None and stop_distance and entry_price:
-        take_profit_price = round(entry_price + _FALLBACK_RR * stop_distance, 8)
-        payload["fallback_take_profit"] = str(take_profit_price)
-        payload["fallback_rr_ratio"] = _FALLBACK_RR
+        # --- Fallback TP: ATR-derived 2:1 reward when no AI pick exists ---
+        # When the universe came from the screener fallback, there is no AI
+        # take-profit level.  Synthesise one at 2× the stop distance so the
+        # execution layer can still submit a bracket order and the stop_worker
+        # has a clear exit target.  Only applied when:
+        #   - take_profit_price is still None (AI didn't provide one)
+        #   - stop_distance is valid (ATR-derived stop succeeded)
+        #   - entry_price is known
+        _FALLBACK_RR = 2.0  # reward-to-risk ratio for fallback universe
+        if take_profit_price is None and stop_distance and entry_price:
+            take_profit_price = round(entry_price + _FALLBACK_RR * stop_distance, 8)
+            payload["fallback_take_profit"] = str(take_profit_price)
+            payload["fallback_rr_ratio"] = _FALLBACK_RR
 
     requested_risk_pct = min(max(config.default_risk_pct, 0.0), config.max_risk_pct)
     effective_risk_pct = requested_risk_pct
@@ -780,9 +787,11 @@ def _same_trade_day(left: datetime | None, right: datetime | None) -> bool:
     return left_utc.date() == right_utc.date()
 
 
-def _derive_stop_distance(*, asset_class: str, entry_price: float | None, atr: float | None) -> float | None:
+def _derive_stop_distance(*, asset_class: str, strategy_name: str, entry_price: float | None, atr: float | None) -> float | None:
     if entry_price is None or entry_price <= 0:
         return None
+    if asset_class == "stock" and strategy_name == "htf_reclaim_long":
+        return round(atr, 8) if atr is not None and atr > 0 else None
     if asset_class == "stock":
         atr_multiple = 1.25
         min_pct = 0.008

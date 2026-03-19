@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     crypto_feature_timeframes: str = "4h,1h,15m,1d"
 
     # Strategy / risk / execution / position timeframes only include trade cadences.
-    stock_strategy_timeframes: str = "1h,15m,5m"
+    stock_strategy_timeframes: str = "5m"
     crypto_strategy_timeframes: str = "4h,1h,15m"
 
     feature_lookback_bars: int = 20

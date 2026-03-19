@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from math import sqrt
 from statistics import fmean, pstdev
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from backend.app.models.core import Candle, FeatureSnapshot, RegimeSnapshot
 from backend.app.services.candle_service import ensure_utc
@@ -26,6 +26,8 @@ class StrategyEvaluationInput:
     regime_snapshot: RegimeSnapshot | None
     candles: tuple[Candle, ...]
     computed_at: datetime
+    candles_by_timeframe: Mapping[str, tuple[Candle, ...]] = field(default_factory=dict)
+    strategy_config: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True, frozen=True)
@@ -255,6 +257,40 @@ def compute_bollinger_position(
     upper = middle + (stdev * stdev_multiplier)
     lower = middle - (stdev * stdev_multiplier)
     return lower, middle, upper
+
+
+def simple_moving_average(candles: Sequence[Candle], *, period: int) -> float | None:
+    if period <= 0 or len(candles) < period:
+        return None
+    closes = [float(item.close) for item in candles[-period:]]
+    return fmean(closes)
+
+
+def exponential_moving_average(candles: Sequence[Candle], *, period: int) -> float | None:
+    values = exponential_moving_average_series(candles, period=period)
+    return values[-1] if values else None
+
+
+def exponential_moving_average_series(candles: Sequence[Candle], *, period: int) -> list[float]:
+    if period <= 0 or len(candles) < period:
+        return []
+    closes = [float(item.close) for item in candles]
+    seed = fmean(closes[:period])
+    multiplier = 2.0 / (period + 1.0)
+    values: list[float] = [seed]
+    ema = seed
+    for close in closes[period:]:
+        ema = ((close - ema) * multiplier) + ema
+        values.append(ema)
+    prefix = [seed] * (period - 1)
+    return prefix + values
+
+
+def moving_average(candles: Sequence[Candle], *, family: str, period: int) -> float | None:
+    normalized_family = (family or "sma").strip().lower()
+    if normalized_family == "ema":
+        return exponential_moving_average(candles, period=period)
+    return simple_moving_average(candles, period=period)
 
 
 def candidate_timestamp(inputs: StrategyEvaluationInput) -> datetime:

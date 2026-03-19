@@ -130,8 +130,6 @@ def test_start_bot_batches_regime_and_strategy_requests_by_timeframe() -> None:
     assert "$strategyPayloads" in script
     assert "@{ asset_class = 'stock'; timeframe = '1d' }" in script
     assert "@{ asset_class = 'crypto'; timeframe = '1d' }" in script
-    assert "@{ asset_class = 'stock'; timeframe = '1h' }" in script
-    assert "@{ asset_class = 'stock'; timeframe = '15m' }" in script
     assert "@{ asset_class = 'stock'; timeframe = '5m' }" in script
     assert "@{ asset_class = 'crypto'; timeframe = '4h' }" in script
     assert "@{ asset_class = 'crypto'; timeframe = '1h' }" in script
