@@ -8,6 +8,7 @@ from backend.app.schemas.core import (
     LiveRolloutChecklistRead,
     PostTradeReviewRead,
     StockPaperContractReviewRead,
+    StockPaperContractSummaryRead,
     SystemEventRead,
     ValidationRequest,
     ValidationResultRead,
@@ -20,7 +21,7 @@ from backend.app.services.operator_service import (
     validate_circuit_breaker,
     validate_kill_switch,
 )
-from backend.app.services.stock_paper_contract_service import build_stock_paper_contract_reviews
+from backend.app.services.stock_paper_contract_service import build_stock_paper_contract_reviews, build_stock_paper_contract_summary
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 
@@ -79,6 +80,16 @@ def get_post_trade_review(
     if asset_class is not None and asset_class not in VALID_ASSET_CLASSES:
         raise HTTPException(status_code=404, detail="Asset class not supported")
     return build_post_trade_reviews(db, asset_class=asset_class, symbol=symbol, timeframe=timeframe, limit=limit)
+
+
+
+
+@router.get("/stock-paper-contract-summary", response_model=StockPaperContractSummaryRead)
+def get_stock_paper_contract_summary(
+    trade_date: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+) -> StockPaperContractSummaryRead:
+    return build_stock_paper_contract_summary(db, trade_date=trade_date)
 
 
 @router.get("/stock-paper-contract-review", response_model=list[StockPaperContractReviewRead])

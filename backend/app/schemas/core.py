@@ -652,13 +652,36 @@ class StockPaperContractReviewRead(BotBaseModel):
     setup_pass_15m: bool | None = None
     trigger_pass_5m: bool | None = None
     indicator_approved: bool | None = None
+    risk_status: str | None = None
+    risk_decision_reason: str | None = None
     entry_price: Decimal | None = None
     stop_price: Decimal | None = None
     target_price: Decimal | None = None
     trade_taken: bool | None = None
     trade_status: str | None = None
+    filled_at: datetime | None = None
+    position_status: str | None = None
+    realized_pnl: Decimal | None = None
+    unrealized_pnl: Decimal | None = None
     outcome: str | None = None
     notes: list[str] = Field(default_factory=list)
+
+
+class StockPaperContractSummaryRead(BotBaseModel):
+    trade_date: date
+    shortlist_count: int = 0
+    ready_now_count: int = 0
+    watchlist_count: int = 0
+    none_count: int = 0
+    indicator_approved_count: int = 0
+    risk_accepted_count: int = 0
+    trades_taken_count: int = 0
+    open_outcomes_count: int = 0
+    closed_outcomes_count: int = 0
+    skipped_ready_count: int = 0
+    winners_count: int = 0
+    losers_count: int = 0
+    latest_ai_scan_at: datetime | None = None
 
 class OpenOrderStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
