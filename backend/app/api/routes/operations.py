@@ -1,3 +1,4 @@
+from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -6,6 +7,7 @@ from backend.app.core.config import get_settings
 from backend.app.schemas.core import (
     LiveRolloutChecklistRead,
     PostTradeReviewRead,
+    StockPaperContractReviewRead,
     SystemEventRead,
     ValidationRequest,
     ValidationResultRead,
@@ -18,6 +20,7 @@ from backend.app.services.operator_service import (
     validate_circuit_breaker,
     validate_kill_switch,
 )
+from backend.app.services.stock_paper_contract_service import build_stock_paper_contract_reviews
 
 router = APIRouter(prefix="/operations", tags=["operations"])
 
@@ -76,3 +79,13 @@ def get_post_trade_review(
     if asset_class is not None and asset_class not in VALID_ASSET_CLASSES:
         raise HTTPException(status_code=404, detail="Asset class not supported")
     return build_post_trade_reviews(db, asset_class=asset_class, symbol=symbol, timeframe=timeframe, limit=limit)
+
+
+@router.get("/stock-paper-contract-review", response_model=list[StockPaperContractReviewRead])
+def get_stock_paper_contract_review(
+    trade_date: date | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[StockPaperContractReviewRead]:
+    return build_stock_paper_contract_reviews(db, trade_date=trade_date, symbol=symbol, limit=limit)

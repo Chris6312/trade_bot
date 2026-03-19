@@ -101,6 +101,12 @@ class UniverseWorker:
                                 asset_class="stock",
                                 selection_reason=pick.catalyst[:120] if pick.catalyst else None,
                                 payload={
+                                    "ai_bucket":              (pick.raw_payload or {}).get("bucket"),
+                                    "ai_contract_version":    (pick.raw_payload or {}).get("contract_version") or "paper_test_v1",
+                                    "ai_named":               True,
+                                    "ai_quality_1h":          (pick.raw_payload or {}).get("quality_1h"),
+                                    "ai_quality_15m":         (pick.raw_payload or {}).get("quality_15m"),
+                                    "ai_reclaim_state":       (pick.raw_payload or {}).get("reclaim_state"),
                                     "ai_entry_zone_low":      str(pick.entry_zone_low)      if pick.entry_zone_low      else None,
                                     "ai_entry_zone_high":     str(pick.entry_zone_high)     if pick.entry_zone_high     else None,
                                     "ai_stop_loss":           str(pick.stop_loss)           if pick.stop_loss           else None,

@@ -79,7 +79,12 @@ def trigger_ai_research_scan(
         "picks": [
             {
                 "symbol": p.symbol,
+                "bucket": (p.raw_payload or {}).get("bucket"),
+                "contract_version": (p.raw_payload or {}).get("contract_version") or "paper_test_v1",
                 "catalyst": p.catalyst,
+                "quality_1h": (p.raw_payload or {}).get("quality_1h"),
+                "quality_15m": (p.raw_payload or {}).get("quality_15m"),
+                "reclaim_state": (p.raw_payload or {}).get("reclaim_state"),
                 "approximate_price": float(p.approximate_price) if p.approximate_price else None,
                 "entry_zone_low": float(p.entry_zone_low) if p.entry_zone_low else None,
                 "entry_zone_high": float(p.entry_zone_high) if p.entry_zone_high else None,

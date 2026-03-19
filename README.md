@@ -92,7 +92,7 @@ These rules define expected bot behavior and should not be violated unless expli
 - **Crypto OHLCV:** Kraken
 
 ### Universe sources
-- **Stocks:** AI-generated universe or Alpaca fallback top-50 universe
+- **Stocks:** AI-generated setup-scout shortlist aligned to the HTF Context + 5m Reclaim paper contract, or fallback large-cap allowlist if AI fails
 - **Crypto:** hard-coded top 15 Kraken universe
 
 ---
@@ -282,7 +282,7 @@ project-root/
 The bot must run in a dependency-safe order.
 
 ### Cycle order
-1. AI stock universe worker
+1. AI stock setup-scout worker
 2. fallback universe loader if AI fails
 3. candle worker
 4. feature builder
@@ -452,7 +452,7 @@ LONG_ONLY_UNTIL_EQUITY=2500
 - crypto live via Kraken
 - paper stocks via Alpaca
 - paper crypto via Alpaca
-- AI stock universe with fallback
+- AI stock setup-scout shortlist with fallback
 - hard-coded top-15 Kraken crypto universe
 - regime engine
 - strategy engine

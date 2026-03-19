@@ -2,10 +2,10 @@
 
 Drives the premarket stock research scan.
 
-Sends a swing-trader prompt (with live ET timestamp + available cash) to the
-OpenAI *responses* endpoint with the ``web_search_preview`` tool enabled so the
-model can pull real premarket data.  Returns a validated list of AiResearchPickResult
-objects that callers persist via AiResearchPersistService.
+Sends a strict stock paper-contract prompt to the OpenAI *responses* endpoint
+with the ``web_search_preview`` tool enabled so the model can pull fresh market
+context. Returns a validated, ordered list of ``AiResearchPickResult`` objects
+that callers persist via ``AiResearchWorker``.
 """
 
 from __future__ import annotations
@@ -26,16 +26,18 @@ logger = logging.getLogger(__name__)
 
 AI_RESEARCH_RESPONSE_TIMEOUT = 240.0
 AI_RESEARCH_CONNECT_TIMEOUT = 15.0
+AI_RESEARCH_MAX_TOTAL_PICKS = 5
 
 _NY_TZ = ZoneInfo("America/New_York")
+_VALID_BUCKETS = {"ready_now", "watchlist"}
+_VALID_QUALITY = {"high", "medium", "low", "unknown"}
+_VALID_RECLAIM_STATES = {"reclaimable", "extended", "mixed", "unknown"}
 
-# ---------------------------------------------------------------------------
-# Result dataclass
-# ---------------------------------------------------------------------------
 
 @dataclass
 class AiResearchPickResult:
     symbol: str
+    bucket: str
     catalyst: str
     approximate_price: Decimal | None
     entry_zone_low: Decimal | None
@@ -47,79 +49,79 @@ class AiResearchPickResult:
     position_size_dollars: Decimal | None
     risk_reward_note: str
     is_bonus_pick: bool
+    structure_quality_1h: str = "unknown"
+    structure_quality_15m: str = "unknown"
+    reclaim_state: str = "unknown"
     raw: dict[str, Any] = field(default_factory=dict)
 
-
-# ---------------------------------------------------------------------------
-# Prompt builder
-# ---------------------------------------------------------------------------
 
 def _build_prompt(*, et_now: datetime, cash_available: Decimal | None) -> str:
     ts = et_now.strftime("%A %B %d, %Y %I:%M %p ET")
     cash_str = f"${float(cash_available):,.2f}" if cash_available is not None else "unknown"
 
-    return (
-        f"You are an experienced swing trader and equity analyst with real-time market access. "
-        f"It's currently {ts}. "
-        f"The broader market context is [use your web search access to note futures direction and any "
-        f"macro catalysts active right now — e.g., CPI data, Fed speak, sector rotation signals].\n\n"
-        f"Perform a fresh, comprehensive premarket/opening-bell scan for 10–15 stocks "
-        f"(liquid names, market cap > $5B preferred, avoid pure pennies) that appear **poised for "
-        f"positive gains today or this week** based on:\n"
-        f"- Latest breaking news (earnings beats/guidance raises, partnerships, FDA approvals, "
-        f"upgrades, sector tailwinds like AI/data centers, defense, energy/infra)\n"
-        f"- Premarket % moves, volume, and unusual activity\n"
-        f"- Analyst upgrades, price target hikes, or strong buy consensus\n"
-        f"- Company-specific catalysts decoupling from broader market\n"
-        f"- X/Twitter sentiment and fast-moving narratives (if relevant)\n\n"
-        f"Account size context (for calibrating setup conviction only): {cash_str} available cash. "
-        f"Do NOT suggest position sizes — the trading system handles all position sizing internally "
-        f"using ATR-based stops and account risk rules.\n\n"
-        f"Return ONLY a JSON object with a single top-level key \"picks\". "
-        f"Each pick must include ALL of these fields:\n"
-        f"  symbol              (string, e.g. \"NVDA\")\n"
-        f"  catalyst            (string, 1-2 sentence max, focus on today's specific driver)\n"
-        f"  approximate_price   (number or null — current/premarket price)\n"
-        f"  entry_zone_low      (number or null — lower end of ideal entry range)\n"
-        f"  entry_zone_high     (number or null — upper end of ideal entry range)\n"
-        f"  stop_loss           (number or null — below key support, ~3-5% max from entry)\n"
-        f"  take_profit_primary (number or null — primary target, 8-15%+ from entry)\n"
-        f"  take_profit_stretch (number or null — optional extended target, else null)\n"
-        f"  use_trail_stop      (boolean — true if trailing stop suits this setup better than fixed)\n"
-        f"  risk_reward_note    (string — one quick tip: volume confirmation, key level, timing risk)\n"
-        f"  is_bonus_pick       (boolean — true for 2-3 higher-volatility/speculative bonus ideas)\n\n"
-        f"Prioritize 10–12 strongest setups with specific, real catalysts confirmed by web search. "
-        f"Include 2–3 bonus picks (is_bonus_pick=true) for higher-conviction speculative setups. "
-        f"Do not include any explanation outside the JSON object."
-    )
+    return f"""You are selecting stocks for a paper-trading watchlist built around a strict multi-timeframe trend-and-reclaim contract. It's currently {ts}. Use web search to ground the answer in today's real market context, news, premarket action, and catalysts.
 
+Your task is NOT to produce a broad ideas list. Your task is to return only liquid U.S. stocks that are most likely to produce valid setups under this contract today. Favor institutional, high-volume names with real movement and clean structure. Avoid thin names, messy charts, leveraged ETFs, and names that already look too extended for a fresh reclaim.
 
-# ---------------------------------------------------------------------------
-# JSON schema for structured output
-# ---------------------------------------------------------------------------
+Paper-trading contract:
+1. Higher-timeframe trend quality matters first.
+2. We want names likely to pass:
+   - 1h bias: fast MA above slow MA and price above both
+   - 15m setup: fast MA above slow MA and price above both
+3. Entry is allowed only after a fresh 5m reclaim:
+   - price above VWAP
+   - price above EMA9
+   - recent pullback into EMA9 and/or VWAP
+   - bullish reclaim candle after the pullback
+4. Be strict. Fewer high-quality names are better than many weak names.
+5. Maximum total symbols across READY_NOW and WATCHLIST combined: {AI_RESEARCH_MAX_TOTAL_PICKS}.
+
+Account size context for setup selectivity only: {cash_str}. Do NOT suggest sizing. The trading system handles risk, sizing, stops, and targets.
+
+Return ONLY a JSON object using this shape:
+{{
+  "ready_now": [{{pick}}, ...],
+  "watchlist": [{{pick}}, ...],
+  "none": {{"explicit": true|false, "reason": string}}
+}}
+
+Each pick must include:
+  symbol                (string, e.g. "NVDA")
+  reason                (string, why it fits this contract today)
+  quality_1h            (one of: high, medium, low, unknown)
+  quality_15m           (one of: high, medium, low, unknown)
+  reclaim_state         (one of: reclaimable, extended, mixed, unknown)
+  risk_note             (string, one-line risk note)
+  approximate_price     (number or null)
+
+Rules for buckets:
+- ready_now: closest to satisfying the full contract right now
+- watchlist: strong 1h and 15m structure, waiting for a 5m pullback/reclaim
+- if nothing is good enough, set both arrays empty and set none.explicit=true
+- if you provide any picks, set none.explicit=false
+- do not add any text outside the JSON object"""
+
 
 _PICK_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "symbol":                 {"type": "string"},
-        "catalyst":               {"type": "string"},
-        "approximate_price":      {"type": ["number", "null"]},
-        "entry_zone_low":         {"type": ["number", "null"]},
-        "entry_zone_high":        {"type": ["number", "null"]},
-        "stop_loss":              {"type": ["number", "null"]},
-        "take_profit_primary":    {"type": ["number", "null"]},
-        "take_profit_stretch":    {"type": ["number", "null"]},
-        "use_trail_stop":         {"type": "boolean"},
-        "risk_reward_note":       {"type": "string"},
-        "is_bonus_pick":          {"type": "boolean"},
+        "symbol": {"type": "string"},
+        "reason": {"type": "string"},
+        "quality_1h": {"type": "string", "enum": sorted(_VALID_QUALITY)},
+        "quality_15m": {"type": "string", "enum": sorted(_VALID_QUALITY)},
+        "reclaim_state": {"type": "string", "enum": sorted(_VALID_RECLAIM_STATES)},
+        "risk_note": {"type": "string"},
+        "approximate_price": {"type": ["number", "null"]},
     },
     "required": [
-        "symbol", "catalyst", "approximate_price",
-        "entry_zone_low", "entry_zone_high",
-        "stop_loss", "take_profit_primary", "take_profit_stretch",
-        "use_trail_stop",
-        "risk_reward_note", "is_bonus_pick",
+        "symbol",
+        "reason",
+        "quality_1h",
+        "quality_15m",
+        "reclaim_state",
+        "risk_note",
+        "approximate_price",
     ],
 }
 
@@ -127,18 +129,21 @@ _RESPONSE_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "picks": {
-            "type": "array",
-            "items": _PICK_SCHEMA,
-        }
+        "ready_now": {"type": "array", "items": _PICK_SCHEMA},
+        "watchlist": {"type": "array", "items": _PICK_SCHEMA},
+        "none": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "explicit": {"type": "boolean"},
+                "reason": {"type": "string"},
+            },
+            "required": ["explicit", "reason"],
+        },
     },
-    "required": ["picks"],
+    "required": ["ready_now", "watchlist", "none"],
 }
 
-
-# ---------------------------------------------------------------------------
-# Service
-# ---------------------------------------------------------------------------
 
 @dataclass
 class AiResearchService:
@@ -154,12 +159,6 @@ class AiResearchService:
         cash_available: Decimal | None,
         now: datetime | None = None,
     ) -> list[AiResearchPickResult]:
-        """Call OpenAI with the premarket swing-trader prompt.
-
-        *cash_available* is injected into the prompt.
-        *now* defaults to the current wall clock time; callers may pass a fixed
-        value for deterministic testing.
-        """
         settings = self.settings
         assert settings is not None
 
@@ -180,7 +179,7 @@ class AiResearchService:
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "name": "premarket_research_picks",
+                    "name": "paper_contract_watchlist",
                     "strict": True,
                     "schema": _RESPONSE_SCHEMA,
                 }
@@ -209,8 +208,7 @@ class AiResearchService:
         if not text:
             raise ValueError(f"AI research: provider returned no text. Keys={list(data.keys())}")
 
-        raw_picks = _parse_picks(text)
-        results = [_coerce_pick(p) for p in raw_picks if isinstance(p, dict)]
+        results = _parse_contract_response(text)
 
         logger.info(
             "ai_research_scan_complete",
@@ -219,13 +217,7 @@ class AiResearchService:
         return results
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _extract_response_text(data: dict[str, Any]) -> str | None:
-    """Handle both OpenAI /responses and /chat/completions response shapes."""
-    # /responses shape: output[].content[].text
     output = data.get("output")
     if isinstance(output, list):
         for item in output:
@@ -239,7 +231,6 @@ def _extract_response_text(data: dict[str, Any]) -> str | None:
                     if child.get("type") in ("output_text", "text") and isinstance(child.get("text"), str):
                         return child["text"]
 
-    # /chat/completions shape
     choices = data.get("choices")
     if isinstance(choices, list) and choices:
         first = choices[0]
@@ -257,19 +248,44 @@ def _extract_response_text(data: dict[str, Any]) -> str | None:
     return None
 
 
-def _parse_picks(text: str) -> list[Any]:
+def _parse_contract_response(text: str) -> list[AiResearchPickResult]:
+    payload = _parse_json_object(text)
+    ready_now = payload.get("ready_now")
+    watchlist = payload.get("watchlist")
+    none_section = payload.get("none") or {}
+
+    if not isinstance(ready_now, list) or not isinstance(watchlist, list):
+        raise ValueError("AI research response missing ready_now/watchlist arrays")
+    if not isinstance(none_section, dict) or not isinstance(none_section.get("explicit"), bool):
+        raise ValueError("AI research response missing none section")
+
+    picks: list[AiResearchPickResult] = []
+    for bucket, items in (("ready_now", ready_now), ("watchlist", watchlist)):
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            picks.append(_coerce_pick(raw, bucket=bucket))
+            if len(picks) >= AI_RESEARCH_MAX_TOTAL_PICKS:
+                return picks
+
+    if picks and bool(none_section.get("explicit")):
+        raise ValueError("AI research response cannot mark none.explicit=true when picks are present")
+    if not picks and not bool(none_section.get("explicit")):
+        raise ValueError("AI research response must mark none.explicit=true when no picks qualify")
+
+    return picks
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
     text = text.strip()
-    # Strip markdown code fences if present
     if text.startswith("```"):
         lines = text.splitlines()
-        text = "\n".join(
-            line for line in lines if not line.startswith("```")
-        ).strip()
+        text = "\n".join(line for line in lines if not line.startswith("```"))
+        text = text.strip()
     parsed = json.loads(text)
-    picks = parsed.get("picks")
-    if not isinstance(picks, list):
-        raise ValueError("AI research response missing 'picks' array")
-    return picks
+    if not isinstance(parsed, dict):
+        raise ValueError("AI research response must be a JSON object")
+    return parsed
 
 
 def _to_decimal(value: Any) -> Decimal | None:
@@ -281,19 +297,48 @@ def _to_decimal(value: Any) -> Decimal | None:
         return None
 
 
-def _coerce_pick(raw: dict[str, Any]) -> AiResearchPickResult:
+def _normalize_token(value: Any, *, valid: set[str], default: str) -> str:
+    token = str(value or "").strip().lower()
+    return token if token in valid else default
+
+
+def _coerce_pick(raw: dict[str, Any], *, bucket: str) -> AiResearchPickResult:
+    symbol = str(raw.get("symbol") or "").upper().strip()
+    reason = str(raw.get("reason") or "").strip()
+    risk_note = str(raw.get("risk_note") or "").strip()
+    quality_1h = _normalize_token(raw.get("quality_1h"), valid=_VALID_QUALITY, default="unknown")
+    quality_15m = _normalize_token(raw.get("quality_15m"), valid=_VALID_QUALITY, default="unknown")
+    reclaim_state = _normalize_token(raw.get("reclaim_state"), valid=_VALID_RECLAIM_STATES, default="unknown")
+    normalized_bucket = bucket if bucket in _VALID_BUCKETS else "watchlist"
+
+    raw_payload = dict(raw)
+    raw_payload.update(
+        {
+            "bucket": normalized_bucket,
+            "quality_1h": quality_1h,
+            "quality_15m": quality_15m,
+            "reclaim_state": reclaim_state,
+            "contract_version": "paper_test_v1",
+            "ai_named": True,
+        }
+    )
+
     return AiResearchPickResult(
-        symbol=str(raw.get("symbol") or "").upper().strip(),
-        catalyst=str(raw.get("catalyst") or "")[:500],
+        symbol=symbol,
+        bucket=normalized_bucket,
+        catalyst=reason[:500],
         approximate_price=_to_decimal(raw.get("approximate_price")),
-        entry_zone_low=_to_decimal(raw.get("entry_zone_low")),
-        entry_zone_high=_to_decimal(raw.get("entry_zone_high")),
-        stop_loss=_to_decimal(raw.get("stop_loss")),
-        take_profit_primary=_to_decimal(raw.get("take_profit_primary")),
-        take_profit_stretch=_to_decimal(raw.get("take_profit_stretch")),
-        use_trail_stop=bool(raw.get("use_trail_stop", False)),
-        position_size_dollars=_to_decimal(raw.get("position_size_dollars")),
-        risk_reward_note=str(raw.get("risk_reward_note") or "")[:300],
-        is_bonus_pick=bool(raw.get("is_bonus_pick", False)),
-        raw=raw,
+        entry_zone_low=None,
+        entry_zone_high=None,
+        stop_loss=None,
+        take_profit_primary=None,
+        take_profit_stretch=None,
+        use_trail_stop=False,
+        position_size_dollars=None,
+        risk_reward_note=risk_note[:300],
+        is_bonus_pick=False,
+        structure_quality_1h=quality_1h,
+        structure_quality_15m=quality_15m,
+        reclaim_state=reclaim_state,
+        raw=raw_payload,
     )

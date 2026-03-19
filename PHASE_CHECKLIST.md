@@ -205,9 +205,8 @@ Generate candidates from enabled stock and crypto strategies.
 ### Suggested Initial Strategy Set
 
 #### Stocks
-- Trend Pullback Long
-- VWAP Reclaim Long
-- Opening Range Breakout Long
+- HTF Context + 5m Reclaim Long (`htf_reclaim_long`) for the active paper workflow
+- optional expansion later only after the paper contract is proven
 
 #### Crypto
 - 4H/1H Trend Continuation Long

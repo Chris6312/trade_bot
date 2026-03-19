@@ -631,6 +631,35 @@ class PostTradeReviewRead(BotBaseModel):
     position: PositionStateRead | None = None
     related_events: list[SystemEventRead] = Field(default_factory=list)
 
+
+class StockPaperContractReviewRead(BotBaseModel):
+    trade_date: date
+    symbol: str
+    ai_named: bool
+    ai_bucket: str | None = None
+    ai_reason: str | None = None
+    ai_quality_1h: str | None = None
+    ai_quality_15m: str | None = None
+    ai_reclaim_state: str | None = None
+    ai_risk_note: str | None = None
+    ai_scanned_at: datetime | None = None
+    strategy_name: str = "htf_reclaim_long"
+    strategy_status: str | None = None
+    candidate_timestamp: datetime | None = None
+    pair_1h_used: str | None = None
+    pair_15m_used: str | None = None
+    bias_pass_1h: bool | None = None
+    setup_pass_15m: bool | None = None
+    trigger_pass_5m: bool | None = None
+    indicator_approved: bool | None = None
+    entry_price: Decimal | None = None
+    stop_price: Decimal | None = None
+    target_price: Decimal | None = None
+    trade_taken: bool | None = None
+    trade_status: str | None = None
+    outcome: str | None = None
+    notes: list[str] = Field(default_factory=list)
+
 class OpenOrderStateRead(BotBaseModel):
     model_config = ConfigDict(from_attributes=True)
 

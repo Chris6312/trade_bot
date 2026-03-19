@@ -17,6 +17,8 @@ The bot currently supports these initial strategies:
 ### Stocks
 - `htf_reclaim_long`
 
+The morning AI stock shortlist is now intended to act as a strict setup scout for this paper contract, returning at most five symbols across READY NOW and WATCHLIST, with explicit NONE behavior when nothing qualifies.
+
 ### Crypto
 - `trend_continuation_long`
 - `vwap_reclaim_long`
@@ -664,3 +666,16 @@ The current strategy engine behaves like a five-pillar checkpoint:
 
 If all five line up and the threshold clears, the row turns **ready**.
 If not, the engine leaves breadcrumbs instead of smoke: **blocked reasons, component scores, threshold, and regime state**.
+
+
+## 12. Stock paper contract review surface
+
+The backend now exposes `/api/v1/operations/stock-paper-contract-review` as a joined audit view for the active stock paper contract. Each row is built from persisted AI research picks plus the latest strategy, risk, execution, and position records for the same symbol.
+
+This review surface is meant to answer four operator questions quickly:
+- did AI name the stock
+- did the indicator approve it
+- did risk accept it
+- was a trade actually taken or skipped
+
+It also surfaces the selected 1h and 15m MA pairs, the 1h/15m/5m contract pass flags, and the latest entry/stop/target recorded by the pipeline.
